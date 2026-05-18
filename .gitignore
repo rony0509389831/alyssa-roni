@@ -16,6 +16,7 @@ tel_aviv_buildings.geojson
 # ==========================================
 download_buildings.py
 check_data.py
+Explanation_files.txt
 
 # ==========================================
 # קבצי פייתון זמניים וסביבות וירטואליות (Python & Envs)
