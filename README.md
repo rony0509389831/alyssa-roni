@@ -98,32 +98,32 @@ $$\mathcal{L} = \text{MSE} = \frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2$$
 
 ```mermaid
 flowchart TD
-    subgraph Input
-        A[משתמש: מוצא + יעד + שעה]
+    subgraph Input["קלט המערכת (Input Schema)"]
+        A["משתמש: נקודות מוצא, יעד ושעת יציאה מבוקשת"]
     end
 
-    subgraph Data_Sources["Data Sources"]
-        B[Open-Meteo API\nטמפרטורה, לחות, עננות]
-        C[עיריית ת\"א\nגבהי מבנים GeoJSON]
-        D[מפ\"י\nחופת עצים]
-        E[OSMnx\nגרף רחובות]
+    subgraph Data_Sources["מקורות מידע (Data Layer)"]
+        B["Open-Meteo API: נתוני טמפרטורה, לחות ועננות"]
+        C["עיריית תל אביב: גבהי מבנים (GeoJSON)"]
+        D["מפ''י: פוליגונים של חופת עצים (GeoJSON)"]
+        E["OSMnx: רשת כבישים ומדרכות עירונית"]
     end
 
-    subgraph Processing["Spatial Processing (GeoPandas)"]
-        F[שיוך מבנים ועצים\nלמקטעי רחוב]
+    subgraph Processing["עיבוד מרחבי (GeoPandas)"]
+        F["שיוך מרחבי (Spatial Join) של המבנים והעצים למקטעי הרחוב"]
     end
 
-    subgraph ML["ML Layer (Scikit-Learn)"]
-        G[חישוב זווית שמש\nPySolar]
-        H[מודל רגרסיה\nחיזוי Thermal Comfort Index]
+    subgraph ML["שכבת החיזוי (AI/ML Layer)"]
+        G["PySolar: חישוב אזימוט וגובה השמש בזמן הנתון"]
+        H["Scikit-Learn: מודל רגרסיה לחיזוי מדד עומס חום (Thermal Comfort Index)"]
     end
 
-    subgraph Routing["Navigation Layer"]
-        I[גרף משוקלל\nDijkstra על משקולות חום]
+    subgraph Routing["אלגוריתם ניווט (Routing Layer)"]
+        I["גרף משוקלל: הרצת Dijkstra על בסיס משקולות החום החזויות"]
     end
 
-    subgraph Output
-        J[מפת Folium\nמסלול מוצל אופטימלי]
+    subgraph Output["פלט המערכת (Output Schema)"]
+        J["מפת Folium אינטראקטיבית ב-Streamlit המציגה מסלול מוצל אופטימלי"]
     end
 
     A --> G
@@ -137,12 +137,13 @@ flowchart TD
     I --> J
 ```
 
+
 **תיאור זרימה:**
-1. **Frontend (Streamlit):** קליטת נקודות מוצא/יעד ושעת יציאה על מפת Folium אינטראקטיבית
-2. **Dynamic Data Layer:** שליפת מזג אוויר מ-Open-Meteo + חישוב מיקום שמש עם PySolar
-3. **Spatial Processing:** GeoPandas משלב מבנים (עירייה) ועצים (מפ"י) לגרף OSMnx
-4. **ML Layer:** Scikit-Learn מחשב ציון עומס חום לכל מקטע רחוב
-5. **Routing:** Dijkstra על הגרף המשוקלל → מסלול אופטימלי מוצל
+1. **Frontend & UI (Streamlit & Folium):** ממשק לקליטת נתוני המשתמש (זמן ומרחב) והצגת הפלט הוויזואלי הסופי.
+2. **Dynamic Environmental Data:**  פנייה ל-API של Open-Meteo לשליפת מזג האוויר ואינטגרציה עם PySolar לחישוב מיקום השמש האסטרונומי.
+3. **Spatial Processing Layer (GeoPandas):**  הלבשת שכבות ה-GIS הסטטיות (מבני העירייה וחופת העצים של מפ"י) על גבי גרף הרחובות הטופולוגי שנשלף מ-OSMnx.
+4. **Machine Learning Model (Scikit-Learn):** חישוב משקולת עומס חום מורגש (בין 1 ל-10) לכל קשת בגרף על בסיס הפיצ'רים הדינמיים והסטטיים.
+5. **Graph Routing Algorithm (NetworkX / Dijkstra):**  מציאת המסלול בעל העלות התרמית הנמוכה ביותר והזרקתו חזרה למפת ה-Frontend.
 
 ---
 
