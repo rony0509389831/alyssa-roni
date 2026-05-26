@@ -10,6 +10,7 @@ tel_aviv_buildings.geojson
 *.kml
 *.xlsx
 *.csv
+!buildings_clean.csv
 
 # ==========================================
 # קבצי סקריפט והורדה מקומיים (Local Scratch Scripts)
@@ -17,6 +18,9 @@ tel_aviv_buildings.geojson
 download_buildings.py
 check_data.py
 Explanation_files.txt
+clean_buildings.py
+eda_buildings.py
+outputs_M2/
 
 # ==========================================
 # קבצי פייתון זמניים וסביבות וירטואליות (Python & Envs)
