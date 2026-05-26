@@ -208,8 +208,7 @@ with tab_map:
     folium.LayerControl(collapsed=False).add_to(m)
 
     with col_map_area:
-        with st.spinner("טוען מפה..."):
-            st_folium(m, height=620, use_container_width=True)
+        st_folium(m, height=620, width=1100)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
