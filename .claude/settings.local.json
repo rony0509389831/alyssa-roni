@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python --version)",
+      "PowerShell(pip show streamlit 2>&1)",
+      "PowerShell(python -m pip --version)"
+    ]
+  }
+}

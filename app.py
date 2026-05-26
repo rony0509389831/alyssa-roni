@@ -102,9 +102,8 @@ with tab_eda:
 
     with col2:
         st.subheader("קומות מול גובה")
-        samp = df[df["floors"].notna() & df["floors"].between(1, 25)].sample(
-            min(2000, len(df)), random_state=42
-        )
+        samp_pool = df[df["floors"].notna() & df["floors"].between(1, 25)]
+        samp = samp_pool.sample(min(2000, len(samp_pool)), random_state=42)
         fig2, ax2 = plt.subplots(figsize=(6, 4))
         colors = samp["height_source"].map({"recorded": "#2980b9", "imputed": "#e67e22"})
         ax2.scatter(samp["floors"], samp["height"], c=colors, alpha=0.25, s=10)
