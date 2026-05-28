@@ -22,6 +22,50 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── RTL גלובלי לכל האפליקציה ─────────────────────────────────────────────────
+st.markdown(
+    """
+    <style>
+        /* כיוון בסיסי לכל גוף האפליקציה */
+        html, body, [class*="stApp"], [data-testid="stAppViewContainer"],
+        [data-testid="stSidebar"], [data-testid="stMarkdownContainer"] {
+            direction: rtl;
+            text-align: right;
+            unicode-bidi: plaintext;
+        }
+
+        /* כותרות, פסקאות ורשימות */
+        h1, h2, h3, h4, h5, h6, p, li, span, label, div {
+            direction: rtl;
+            text-align: right;
+            unicode-bidi: plaintext;
+        }
+
+        /* טאבים — לסדר את הטאבים מימין לשמאל */
+        [data-testid="stTabs"] [role="tablist"] {
+            direction: rtl;
+        }
+
+        /* רכיבי קלט (slider, multiselect, radio) — להשאיר טבעיים */
+        [data-baseweb="select"], [data-baseweb="input"], [data-baseweb="slider"] {
+            direction: ltr;
+        }
+
+        /* טבלאות — נתונים נשארים LTR */
+        [data-testid="stDataFrame"], [data-testid="stTable"] {
+            direction: ltr;
+        }
+
+        /* קוד וגרפים — LTR */
+        pre, code, .stPlotlyChart, .stPyplotChart {
+            direction: ltr;
+            text-align: left;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # ── טעינת נתונים ──────────────────────────────────────────────────────────────
 @st.cache_data
 def load_buildings() -> pd.DataFrame:
