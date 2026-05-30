@@ -103,8 +103,8 @@ elif src_filter == "מחושב בלבד":
     df = df[df["height_source"] == "imputed"]
 
 # ── טאבים ──────────────────────────────────────────────────────────────────────
-tab_problem, tab_lit, tab_eda, tab_map, tab_nav, tab_about = st.tabs([
-    "🎯 למידת הבעיה", "📚 סקירת ספרות", "📊 ניתוח נתונים", "🗺️ מפה", "🚶 ניווט", "ℹ️ אודות"
+tab_problem, tab_lit, tab_market, tab_eda, tab_map, tab_nav, tab_about = st.tabs([
+    "🎯 למידת הבעיה", "📚 סקירת ספרות", "🏪 סקר שוק", "📊 ניתוח נתונים", "🗺️ מפה", "🚶 ניווט", "ℹ️ אודות"
 ])
 
 
@@ -541,7 +541,369 @@ with tab_lit:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — EDA
+# TAB 2 — MARKET SURVEY (M2 · רכיב 3 מתוך 4)
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_market:
+    st.title("🏪 סקר שוק — מי כבר עושה משהו דומה")
+    st.caption("רכיב 3 מתוך 4 בדשבורד M2")
+
+    # ── הקדמה ──────────────────────────────────────────────────────────────────
+    st.markdown(
+        """
+        <div dir="rtl" style="background:#fdf2e9;border-right:6px solid #d35400;padding:18px 22px;border-radius:8px;margin:10px 0 22px 0;">
+        <div style="font-size:14px;color:#a04000;font-weight:600;margin-bottom:6px;">מה כבר קיים בשטח?</div>
+        <div style="font-size:18px;line-height:1.5;color:#1c1c1c;">
+        בחרנו 5 מתחרים — 3 אפליקציות ניווט מסחריות שכל הולך רגל מכיר,
+        ו-2 פתרונות חלקיים בתחום הצל שנמצאים בקצה הטכנולוגי.
+        המטרה: לא להמציא את הגלגל, ולזהות במדויק את הפער שבו <b>SHADY</b> ייחודית.
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # ── 5 כרטיסיות מתחרים ──────────────────────────────────────────────────────
+    st.subheader("👀 5 המתחרים — תיאור + לינק חי")
+
+    competitors = [
+        {
+            "screenshot": "data/screenshots/google_maps.png",
+            "name": "Google Maps",
+            "type": "מסחרי · ענק טכנולוגיה",
+            "url": "https://maps.google.com",
+            "ui": "מסך מפה נקי עם חיפוש כתובת, קיצורי דרך לבית/עבודה והיסטוריית חיפוש. סרגלי קטגוריה עליונים.",
+            "strength": "כיסוי גלובלי, עברית מלאה, אינטגרציה עם Gmail/Calendar.",
+            "weakness": "מתעלם לחלוטין משמש, צל ומזג אוויר. ממליץ אותו מסלול ב-8:00 ו-13:00.",
+            "color": "#4285F4",
+        },
+        {
+            "screenshot": "data/screenshots/waze.png",
+            "name": "Waze",
+            "type": "מסחרי · בבעלות Google",
+            "url": "https://waze.com",
+            "ui": "מצב Driving directions עם שדות מוצא/יעד וכפתור 'Leave now'. דיווחי משתמשים בזמן אמת.",
+            "strength": "קהילתיות חזקה, דיווחים בזמן אמת, מותג ישראלי-בהובלה.",
+            "weakness": "מיועד לנהגים. ההליכה היא feature שולי, לא חוויה ראשית.",
+            "color": "#33CCFF",
+        },
+        {
+            "screenshot": "data/screenshots/moovit.png",
+            "name": "Moovit",
+            "type": "מסחרי · ישראלי",
+            "url": "https://moovit.com",
+            "ui": "מסך נחיתה נקי עם בורר Directions/Lines וכפתור חיפוש כתום בולט. בחירת מדינה ושפה למעלה.",
+            "strength": "המומחה בתח\"צ בישראל, עברית/RTL מלאה, חזק במידע על אוטובוסים.",
+            "weakness": "סגמנט ההליכה הוא 'הדבר שבין הנקודות' — לא ממוטב לחוויה.",
+            "color": "#0066CC",
+        },
+        {
+            "screenshot": "data/screenshots/shadowmap.png",
+            "name": "Shadowmap",
+            "type": "פתרון חלקי · אוסטריה",
+            "url": "https://shadowmap.org",
+            "ui": "מפה תלת-ממדית עם דיסקת מצפן וסליידר זמן (לפי שעה ולפי יום בשנה). מצבי VISUALIZE / ANALYZE.",
+            "strength": "ויזואליזציה מרהיבה של צל מבנים, גלובלי, חינמי לצפייה.",
+            "weakness": "תצוגה בלבד — אין ניווט! אין חופת עצים. לא ממליץ מסלולים.",
+            "color": "#6c3483",
+        },
+        {
+            "screenshot": "data/screenshots/coolwalks.png",
+            "name": "CoolWalks",
+            "type": "אקדמי · POC",
+            "url": "https://arxiv.org/abs/2405.01225",
+            "ui": "אין UI ציבורי — איורים אקדמיים בלבד. Figure 1 מציג 5 מסלולים חלופיים לפי פרמטר sun-avoidance α.",
+            "strength": "אלגוריתם ניווט-מוצל ראשון שפורסם, מתמטיקה חזקה (Sulzer & Bönisch).",
+            "weakness": "לא מוצר. רק צל מבנים. נבדק על ערים מערביות. ללא דאטה דינמי.",
+            "color": "#1e8449",
+        },
+    ]
+
+    # מציגים בשתי שורות: 3 + 2
+    cols_row1 = st.columns(3)
+    cols_row2 = st.columns(3)
+
+    import os
+    for i, comp in enumerate(competitors):
+        col = cols_row1[i] if i < 3 else cols_row2[i - 3]
+        with col:
+            # כותרת + סוג (מעל הצילום)
+            st.markdown(
+                f"""
+                <div dir="rtl" style="border-top:5px solid {comp['color']};border-radius:6px 6px 0 0;
+                                       padding:10px 12px 6px 12px;background:#fafafa;text-align:center;">
+                    <div style="font-size:18px;font-weight:700;color:{comp['color']};">{comp['name']}</div>
+                    <div style="font-size:11px;color:#777;">{comp['type']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # צילום מסך (או placeholder אם הקובץ לא קיים)
+            if os.path.exists(comp["screenshot"]):
+                st.image(comp["screenshot"], use_container_width=True)
+            else:
+                st.markdown(
+                    f"""
+                    <div dir="rtl" style="background:#fff4e6;border:2px dashed #f39c12;
+                                           padding:30px 10px;text-align:center;color:#a04000;
+                                           font-size:13px;line-height:1.5;">
+                        📷 <b>צילום חסר</b><br>
+                        שמרי את הצילום בשם:<br>
+                        <code style="direction:ltr;display:inline-block;background:#fff;padding:2px 6px;border-radius:3px;font-size:11px;margin-top:4px;">{comp['screenshot'].split('/')[-1]}</code><br>
+                        <span style="font-size:11px;">בתיקייה <code>data/screenshots/</code></span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            # תיאור + חוזק + חולשה (מתחת לצילום)
+            st.markdown(
+                f"""
+                <div dir="rtl" style="border:1px solid #ddd;border-top:none;border-radius:0 0 6px 6px;
+                                       padding:12px 14px;margin-bottom:6px;background:#fafafa;
+                                       unicode-bidi:embed;text-align:right;">
+                    <div dir="rtl" style="font-size:12px;margin-bottom:8px;unicode-bidi:embed;"><b>ממשק:</b> {comp['ui']}</div>
+                    <div dir="rtl" style="font-size:12px;margin-bottom:6px;color:#196f3d;unicode-bidi:embed;"><b>✓ חוזק:</b> {comp['strength']}</div>
+                    <div dir="rtl" style="font-size:12px;color:#922b21;unicode-bidi:embed;"><b>✗ חולשה:</b> {comp['weakness']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.link_button(f"🔗 לאתר {comp['name']}", comp["url"], use_container_width=True)
+
+    st.divider()
+
+    # ── טבלת השוואה ────────────────────────────────────────────────────────────
+    st.subheader("📊 טבלת השוואה — פיצ'רים · מחיר · קהל · ייחוד")
+
+    market_data = [
+        {
+            "מתחרה": "Google Maps",
+            "פיצ'רים עיקריים": "ניווט רב-מודלי, 3 מסלולים מוצעים, תחבורה ציבורית",
+            "מחיר": "חינם (פרסומות)",
+            "קהל יעד": "כללי — מיליארדי משתמשים",
+            "נוחות תרמית": "❌ אין",
+            "דאטה דינמי": "פקקים בלבד",
+            "חולשה מרכזית": "מתעלם משמש לחלוטין",
+        },
+        {
+            "מתחרה": "Waze",
+            "פיצ'רים עיקריים": "ניווט רכב, דיווחים קהילתיים, מצלמות",
+            "מחיר": "חינם (פרסומות)",
+            "קהל יעד": "נהגים פרטיים",
+            "נוחות תרמית": "❌ אין",
+            "דאטה דינמי": "תנועה בזמן אמת",
+            "חולשה מרכזית": "לא מיועד להולכי רגל",
+        },
+        {
+            "מתחרה": "Moovit",
+            "פיצ'רים עיקריים": "תח\"צ, זמני המתנה, סגמנטי הליכה",
+            "מחיר": "חינם / Premium 19.90 ₪/חודש",
+            "קהל יעד": "משתמשי תחבורה ציבורית",
+            "נוחות תרמית": "❌ אין",
+            "דאטה דינמי": "זמני אוטובוסים",
+            "חולשה מרכזית": "ההליכה היא נספח לתח\"צ",
+        },
+        {
+            "מתחרה": "Shadowmap",
+            "פיצ'רים עיקריים": "תצוגת צל מבנים תלת-ממדית, סליידר זמן",
+            "מחיר": "חינם / Pro $5/חודש",
+            "קהל יעד": "אדריכלים, מתכננים, חובבי טכנולוגיה",
+            "נוחות תרמית": "⚠️ צל מבנים בלבד",
+            "דאטה דינמי": "מיקום שמש בלבד",
+            "חולשה מרכזית": "אין ניווט — רק תצוגה",
+        },
+        {
+            "מתחרה": "CoolWalks",
+            "פיצ'רים עיקריים": "אלגוריתם ניווט-מוצל אקדמי, קוד פתוח",
+            "מחיר": "חינם (לא מוצר)",
+            "קהל יעד": "חוקרים בלבד",
+            "נוחות תרמית": "✅ חלקי (מבנים)",
+            "דאטה דינמי": "❌ סטטי",
+            "חולשה מרכזית": "לא נגיש לציבור, ללא עצים",
+        },
+        {
+            "מתחרה": "SHADY (אנחנו)",
+            "פיצ'רים עיקריים": "ניווט מוצל מותאם-שעה, מבנים + עצים + מזג אוויר חי",
+            "מחיר": "חינם (MVP)",
+            "קהל יעד": "הולכי רגל בת\"א — אוכלוסיות רגישות UV",
+            "נוחות תרמית": "✅ מלא (TCI 1-10)",
+            "דאטה דינמי": "✅ שמש + מזג אוויר + ML",
+            "חולשה מרכזית": "כיסוי גיאוגרפי: ת\"א בלבד (MVP)",
+        },
+    ]
+    market_df = pd.DataFrame(market_data)
+    st.dataframe(market_df, use_container_width=True, hide_index=True)
+    st.caption("💡 לחיצה על כותרת עמודה ממיינת · השורה האחרונה היא SHADY")
+
+    st.divider()
+
+    # ── תרשים מיצוב ────────────────────────────────────────────────────────────
+    st.subheader("🎯 תרשים מיצוב — איפה אנחנו על המפה?")
+
+    fig_pos, ax_pos = plt.subplots(figsize=(10, 6.5))
+
+    positions = [
+        ("Google Maps", 3.5, 0.5, "#4285F4", 1200),
+        ("Waze", 4.2, 0.3, "#33CCFF", 900),
+        ("Moovit", 3.0, 0.7, "#0066CC", 700),
+        ("Shadowmap", 1.5, 3.8, "#6c3483", 500),
+        ("CoolWalks", 1.0, 4.3, "#1e8449", 400),
+        ("SHADY", 4.5, 4.7, "#d35400", 1600),
+    ]
+
+    for name, x, y, color, size in positions:
+        is_us = name == "SHADY"
+        ax_pos.scatter(
+            x, y, s=size, c=color, alpha=0.85 if is_us else 0.65,
+            edgecolors="#2c3e50" if is_us else "white",
+            linewidths=3 if is_us else 1.5, zorder=5,
+        )
+        offset_y = 0.35 if y < 4 else -0.45
+        ax_pos.annotate(
+            name, (x, y), xytext=(0, 0),
+            textcoords="offset points", ha="center", va="center",
+            fontsize=9 if not is_us else 11,
+            fontweight="bold" if is_us else "normal",
+            color="white" if is_us else "#1c1c1c",
+            zorder=6,
+        )
+
+    # מסגרת הרבעים
+    ax_pos.axhline(2.5, color="#999", linestyle="--", linewidth=1, alpha=0.5)
+    ax_pos.axvline(2.5, color="#999", linestyle="--", linewidth=1, alpha=0.5)
+
+    # תוויות רבעים
+    ax_pos.text(0.7, 4.7, "Shade focus,\nstatic data", fontsize=9,
+                color="#666", style="italic", ha="left")
+    ax_pos.text(4.7, 4.95, "Shade focus,\nreal-time data ✨",
+                fontsize=10, color="#d35400", fontweight="bold", ha="right")
+    ax_pos.text(0.7, 0.15, "No shade,\nstatic", fontsize=9,
+                color="#666", style="italic", ha="left")
+    ax_pos.text(4.7, 0.15, "No shade,\nreal-time", fontsize=9,
+                color="#666", style="italic", ha="right")
+
+    ax_pos.set_xlim(0, 5.2)
+    ax_pos.set_ylim(-0.3, 5.3)
+    ax_pos.set_xlabel("Real-time / Dynamic Data Integration  →", fontsize=11)
+    ax_pos.set_ylabel("Shade & Thermal Comfort Focus  →", fontsize=11)
+    ax_pos.set_title("Competitive Positioning Map — SHADY occupies an empty quadrant",
+                     fontsize=12, fontweight="bold", pad=15)
+    ax_pos.set_xticks([])
+    ax_pos.set_yticks([])
+    ax_pos.spines["top"].set_visible(False)
+    ax_pos.spines["right"].set_visible(False)
+    ax_pos.set_facecolor("#fafafa")
+
+    st.pyplot(fig_pos, use_container_width=True)
+    plt.close(fig_pos)
+
+    st.info(
+        "💡 **התובנה המרכזית:** הרבע הימני-עליון — שילוב של **דאטה דינמי** עם "
+        "**מיקוד בנוחות תרמית** — היה ריק לחלוטין לפני SHADY. "
+        "המתחרים המסחריים חזקים בזמן אמת אבל מתעלמים מהשמש; "
+        "פתרונות הצל הקיימים סטטיים ולא ניווטיים."
+    )
+
+    st.divider()
+
+    # ── תובנות לעיצוב ──────────────────────────────────────────────────────────
+    st.subheader("✨ תובנות לעיצוב — מה לאמץ, מה לשנות, מה הייחוד שלנו")
+
+    insight_col1, insight_col2 = st.columns(2)
+
+    with insight_col1:
+        st.markdown(
+            """
+            #### ✅ מה לאמץ מהמתחרים
+
+            **מ-Google Maps:**
+            - ממשק נקי עם מסלול ברור (לא 3 אפשרויות מבלבלות)
+            - חיפוש כתובת חופשי
+
+            **מ-Waze:**
+            - עדכונים בזמן אמת
+            - שפה ויזואלית ידידותית (אייקונים, צבעים)
+
+            **מ-Moovit:**
+            - עברית/RTL מלאה כברירת מחדל
+            - תמיכה במשתמש ישראלי
+
+            **מ-Shadowmap:**
+            - ויזואליזציית צל כשכבה על המפה
+            - סליידר זמן לתכנון מראש
+            """
+        )
+
+    with insight_col2:
+        st.markdown(
+            """
+            #### 🚫 מה לשנות / מה הייחוד שלנו
+
+            **לא לחזור על הטעות של Google Maps:**
+            ממליצים אותו מסלול ב-8:00 ו-13:00 — אנחנו נשנה לפי שעת היציאה.
+
+            **להשלים את החסר ב-Shadowmap:**
+            הם מציגים צל אבל לא מנווטים — אנחנו עושים את שני הדברים.
+
+            **לקחת את CoolWalks למוצר אמיתי:**
+            הם נשארו אקדמיים — אנחנו מוציאות לאוויר עם UI נגיש.
+
+            **🔑 הייחוד היחיד שלנו:**
+            **חופת עצים + מזג אוויר חי + ML — ביחד**.
+            אף אחד מהמתחרים לא משלב את שלושת אלה.
+            """
+        )
+
+    st.divider()
+
+    # ── הצהרת מיצוב ────────────────────────────────────────────────────────────
+    st.markdown(
+        """
+        <div dir="rtl" style="background:#eafaf1;border-right:6px solid #1e8449;padding:18px 22px;border-radius:8px;margin:10px 0;">
+        <div style="font-size:14px;color:#196f3d;font-weight:600;margin-bottom:6px;">הצהרת המיצוב שלנו</div>
+        <div dir="rtl" style="font-size:18px;line-height:1.7;color:#1c1c1c;unicode-bidi:embed;text-align:right;">
+        <b>\u200FSHADY היא אפליקציית הניווט הראשונה</b> המיועדת ל<b>הולכי רגל בעיר ים-תיכונית</b>,
+        שמייצרת מסלול אישי לפי <b>שעת היציאה, גובה המבנים, חופת העצים ומזג האוויר בזמן אמת</b>.
+        <br><br>
+        בניגוד למתחרים המסחריים — אנחנו לא משלמים בקילומטרים, אנחנו משלמים ב-UV.
+        בניגוד לפתרונות הצל הקיימים — אנחנו לא רק מציגים מפה, אנחנו מובילים אותך הביתה.
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # ── תרגיל SCAMPER ──────────────────────────────────────────────────────────
+    with st.expander("🧠 תרגיל SCAMPER — איך הגענו לרעיון? (ממפגש 1)"):
+        st.markdown(
+            """
+            SCAMPER הוא תרגיל בריינסטורם שיטתי — שואל 7 שאלות על מוצרים קיימים
+            כדי לחשוף הזדמנויות חדשות. ככה הגענו ל-SHADY:
+
+            | אות | משמעות | התובנה שלנו על Google Maps |
+            |-----|---------|------------------------------|
+            | **S** | מה **נחליף**? | מסלול קצר-ביותר → מסלול **מוצל-ביותר** |
+            | **C** | מה **נשלב**? | GIS סטטי (מבנים, עצים) + מזג אוויר חי + ML |
+            | **A** | מה **נתאים**? | פילוסופיית Cool Walks Barcelona → לעיר הים-תיכונית של ת"א |
+            | **M** | מה **נשנה**? | משקלי קשתות בגרף — לא מרחק, אלא Thermal Comfort Index |
+            | **P** | מה **נשתמש אחרת**? | אותה תשתית יכולה לשמש מתכנני ערים לזיהוי "אזורי סיכון תרמי" |
+            | **E** | מה **נסלק**? | את הצורך של המשתמש לחשב לבד מתי השמש "מאחור" |
+            | **R** | מה **נסדר אחרת**? | במקום "המסלול הקצר ועוקפים שמש" → "המסלול המוצל ועוקפים כביש" |
+
+            **שורה תחתונה:** התרגיל חשף שאין כאן צורך בטכנולוגיה חדשה — אלא ב**שילוב חכם** של
+            שכבות שכבר קיימות, סביב משקל-קשת אחר. זה מה שהוביל אותנו להחלטה לבנות על OSMnx
+            + GeoPandas, ולא להמציא מנוע גרפי חדש.
+            """
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — EDA
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_eda:
     st.title("📊 ניתוח נתוני המבנים – תל אביב")
