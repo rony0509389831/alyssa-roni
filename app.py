@@ -103,8 +103,8 @@ elif src_filter == "מחושב בלבד":
     df = df[df["height_source"] == "imputed"]
 
 # ── טאבים ──────────────────────────────────────────────────────────────────────
-tab_problem, tab_eda, tab_map, tab_nav, tab_about = st.tabs([
-    "🎯 למידת הבעיה", "📊 ניתוח נתונים", "🗺️ מפה", "🚶 ניווט", "ℹ️ אודות"
+tab_problem, tab_lit, tab_eda, tab_map, tab_nav, tab_about = st.tabs([
+    "🎯 למידת הבעיה", "📚 סקירת ספרות", "📊 ניתוח נתונים", "🗺️ מפה", "🚶 ניווט", "ℹ️ אודות"
 ])
 
 
@@ -310,7 +310,238 @@ with tab_problem:
         )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — EDA
+# TAB 1 — LITERATURE REVIEW (M2 · רכיב 2 מתוך 4)
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_lit:
+    st.title("📚 סקירת ספרות — מה כבר נחקר ואיפה הפער")
+    st.caption("רכיב 2 מתוך 4 בדשבורד M2")
+
+    # ── שאלת המחקר ──────────────────────────────────────────────────────────────
+    st.markdown(
+        """
+        <div style="background:#fef5e7;border-right:6px solid #d68910;padding:18px 22px;border-radius:8px;margin:10px 0 22px 0;">
+        <div style="font-size:14px;color:#7d6608;font-weight:600;margin-bottom:6px;">שאלת המחקר</div>
+        <div style="font-size:19px;line-height:1.5;color:#1c1c1c;">
+        האם ניתן לחשב בזמן אמת מסלול הליכה עירוני שממזער חשיפה לשמש —
+        תוך שילוב גבהי מבנים, חופת עצים, מיקום השמש ומזג אוויר —
+        ברזולוציה של מקטע רחוב, בעיר ים-תיכונית?
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        חיפשנו בספרות האקדמית מה כבר נעשה בכל אחד מהצירים של SHADY —
+        כדי לוודא שאנחנו לא ממציאים את הגלגל מחד, ולזהות מהו הפער המדויק
+        שאף קבוצה אחרת עדיין לא סגרה מאידך. מקורות אותרו ב-**Google Scholar**,
+        **arXiv** ו-**Nature Scientific Reports**, וכל DOI אומת ידנית.
+        """
+    )
+
+    st.divider()
+
+    # ── טבלת השוואה ──────────────────────────────────────────────────────────────
+    st.subheader("📊 טבלת השוואה — דאטה · מודל · תוצאה")
+
+    lit_data = [
+        {
+            "#": 1,
+            "דאטה": "OpenStreetMap — רשתות רחובות של 27,009 ערים בארה\"ב (צמתים, קשתות, תכונות)",
+            "מודל": "אלגוריתמים גרפיים מבוססי NetworkX: Dijkstra, A*, מדדי מרכזיות",
+            "תוצאה": "ספריית קוד פתוח (OSMnx) שמורידה וממדלת רשתות רחובות מכל מקום בעולם תוך שניות",
+        },
+        {
+            "#": 2,
+            "דאטה": "קולומבוס, אוהיו — Landsat 8 תרמי + מודל LiDAR תלת-ממדי + חופת עצים",
+            "מודל": "רגרסיה מרחבית (OLS + Spatial Lag) על עוצמת Urban Heat Island",
+            "תוצאה": "צל עצים מפחית UHI ב-0.7°C, צל מבנים ב-0.3°C — שני האפקטים מובהקים ועצמאיים",
+        },
+        {
+            "#": 3,
+            "דאטה": "3 פארקים במרכז טייוואן — מדידות SVF + מדד PET + ספירת מבקרים שעה-שעה",
+            "מודל": "רגרסיה לוגיסטית בין SVF/PET לבין הסתברות נוכחות הולכי רגל",
+            "תוצאה": "כש-SVF < 0.5 (יותר צל), נוכחות הולכי רגל בשעות חמות עולה ב-40-60%",
+        },
+        {
+            "#": 4,
+            "דאטה": "גריד סינתטי + ערים אמיתיות (Boston, Barcelona) — Building footprints + OSM",
+            "מודל": "מדד CoolWalkability + פרמטר sun-avoidance על גרף הרחובות",
+            "תוצאה": "עד 80% הליכה בצל בתוספת 5-10% למרחק — תלוי קריטית בגיאומטריית העיר",
+        },
+    ]
+    lit_df = pd.DataFrame(lit_data)
+
+    st.dataframe(
+        lit_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn(width="small", help="מספר השורה תואם למספר המקור בפירוט למטה"),
+            "דאטה": st.column_config.TextColumn(width="medium"),
+            "מודל": st.column_config.TextColumn(width="medium"),
+            "תוצאה": st.column_config.TextColumn(width="medium"),
+        },
+    )
+
+    st.caption("💡 לחיצה על כותרת עמודה ממיינת · גרירה משנה רוחב")
+
+    st.divider()
+
+    # ── ארבע כרטיסיות פירוט ─────────────────────────────────────────────────────
+    st.subheader("📖 פירוט המקורות — לחיצה לקריאה מורחבת")
+
+    with st.expander("📘 **1. Boeing (2017)** — *OSMnx: New methods for acquiring, constructing, analyzing, and visualizing complex street networks*"):
+        st.markdown(
+            """
+            **ציטוט APA:**
+            Boeing, G. (2017). OSMnx: New methods for acquiring, constructing, analyzing, and visualizing complex street networks.
+            *Computers, Environment and Urban Systems, 65*, 126–139.
+            🔗 [https://doi.org/10.1016/j.compenvurbsys.2017.05.004](https://doi.org/10.1016/j.compenvurbsys.2017.05.004)
+
+            **למה זה חשוב ל-SHADY:**
+            המאמר מציג את הספרייה שהפכה לסטנדרט בתעשייה לעבודה עם רשתות רחובות עירוניות.
+            הוא מצדיק את הבחירה הטכנית שלנו — להוציא את רשת הרחובות של ת"א מ-OpenStreetMap
+            ולא לבנות גרף מאפס.
+
+            **מה אנחנו לוקחים:** את כל שכבת ה-NetworkX + אלגוריתם Dijkstra.
+            **מה אנחנו מוסיפים:** משקלי קשתות שמבוססים על נוחות תרמית, לא רק על מרחק.
+            """
+        )
+
+    with st.expander("📗 **2. Park, Guldmann & Liu (2021)** — *Impacts of tree and building shades on the urban heat island*"):
+        st.markdown(
+            """
+            **ציטוט APA:**
+            Park, Y., Guldmann, J.-M., & Liu, D. (2021). Impacts of tree and building shades on the urban heat island:
+            Combining remote sensing, 3D digital city and spatial regression approaches.
+            *Computers, Environment and Urban Systems, 88*, 101655.
+            🔗 [https://doi.org/10.1016/j.compenvurbsys.2021.101655](https://doi.org/10.1016/j.compenvurbsys.2021.101655)
+
+            **למה זה חשוב ל-SHADY:**
+            המאמר הראשון שכימת בנפרד את התרומה של צל עצים מול צל מבנים לקירור העירוני.
+            זה ה**הצדקה האקדמית** לכך שב-SHADY יש שני פיצ'רים נפרדים: `tree_canopy_ratio` ו-`mean_building_height`,
+            ולא פיצ'ר אחד מאוחד.
+
+            **תובנה מפתח:** צל עצים אפקטיבי **פי 2.3 יותר** מצל מבנים בהפחתת UHI —
+            ולכן בעיר ים-תיכונית כמו ת"א, חופת העצים היא קריטית.
+            """
+        )
+
+    with st.expander("📙 **3. Lin, Tsai, Hwang & Matzarakis (2012)** — *Quantification of the effect of thermal indices and sky view factor on park attendance*"):
+        st.markdown(
+            """
+            **ציטוט APA:**
+            Lin, T.-P., Tsai, K.-T., Hwang, R.-L., & Matzarakis, A. (2012). Quantification of the effect of thermal indices
+            and sky view factor on park attendance.
+            *Landscape and Urban Planning, 107*(2), 137–146.
+            🔗 [https://doi.org/10.1016/j.landurbplan.2012.05.011](https://doi.org/10.1016/j.landurbplan.2012.05.011)
+
+            **למה זה חשוב ל-SHADY:**
+            המאמר מוכיח שהולכי רגל אכן מתנהגים אחרת בתגובה לחשיפה לשמש — הם **מצביעים ברגליים**
+            ובוחרים אקטיבית באזורים מוצלים. זה תוקף את עצם קיומה של הבעיה שלנו: אם אנשים
+            לא היו אכפת להם מהשמש, לא היה צורך באפליקציה.
+
+            **תובנה מפתח:** הקשר בין SVF (Sky View Factor) להתנהגות אינו לינארי —
+            יש "סף" סביב SVF=0.5 שמעליו אנשים נמנעים אקטיבית מהמקום בשעות חמות.
+            זה מצדיק את בחירת הסקאלה הלא-לינארית שלנו (1-10) במקום מעלות צלזיוס.
+            """
+        )
+
+    with st.expander("📕 **4. Sulzer & Bönisch (2024/2025)** — *CoolWalks: Assessing the potential of shaded routing for active mobility*  ⭐ המאמר הקרוב ביותר"):
+        st.markdown(
+            """
+            **ציטוט APA (גרסה רשמית):**
+            Sulzer, M., & Bönisch, S. (2025). CoolWalks for active mobility in urban street networks.
+            *Scientific Reports, 15*.
+            🔗 [https://doi.org/10.1038/s41598-025-97200-2](https://doi.org/10.1038/s41598-025-97200-2)
+
+            **גרסת arXiv (2024):**
+            [https://arxiv.org/abs/2405.01225](https://arxiv.org/abs/2405.01225)
+
+            **למה זה הכי חשוב ל-SHADY:**
+            זה המאמר היחיד שפורסם עד היום שבונה אלגוריתם ניווט מבוסס-צל על רשת רחובות עירונית.
+            אבל הוא מותיר **ארבעה פערים מהותיים** שאנחנו ממלאות:
+
+            | # | הפער אצלם | מה SHADY עושה אחרת |
+            |---|-----------|---------------------|
+            | 1 | רק צל מבנים — מתעלם מעצים | כולל שכבת חופת עצים מ-data.gov.il |
+            | 2 | מזג אוויר סטטי | Open-Meteo API חי + fallback מקומי |
+            | 3 | Boston / Barcelona / גריד סינתטי | ת"א — עיר ים-תיכונית עם רחובות צרים |
+            | 4 | נוסחה אנליטית בלבד | ML על Scikit-Learn לחיזוי TCI + השלמת גבהים חסרים |
+
+            **השורה התחתונה:** הם הוכיחו שהרעיון ישים — אנחנו מוכיחות שהוא ישים **כאן, עכשיו, עם דאטה אמיתי**.
+            """
+        )
+
+    st.divider()
+
+    # ── הלקח האחד מכל מקור ──────────────────────────────────────────────────────
+    st.subheader("🎯 הלקח האחד מכל מקור")
+
+    l1, l2 = st.columns(2)
+    with l1:
+        st.markdown(
+            """
+            **📘 מ-Boeing למדנו:**
+            לא בונים גרף רחובות מאפס. OSMnx הוא הסטנדרט — וגם נותן לנו מטא-דאטה
+            עשירה (highway, length, geometry) בחינם.
+
+            **📙 מ-Lin למדנו:**
+            הולכי רגל באמת בוחרים מסלולים מוצלים — אז יש למי לבנות את האפליקציה.
+            בנוסף, הקשר בין נוחות לחשיפה הוא לא לינארי, ולכן סקאלה 1-10 עדיפה
+            על מעלות צלזיוס.
+            """
+        )
+    with l2:
+        st.markdown(
+            """
+            **📗 מ-Park למדנו:**
+            צל עצים וצל מבנים תורמים בנפרד לקירור — חובה לייצג כל אחד כפיצ'ר נפרד.
+            צל עצים אפקטיבי פי 2.3 יותר, ולכן `tree_canopy_ratio` יקבל משקל גבוה במודל.
+
+            **📕 מ-Sulzer & Bönisch למדנו:**
+            ניווט-מוצל ישים — וזה מה שאנחנו ממקמים את עצמנו ביחס אליו.
+            הם הוכיחו את העיקרון; אנחנו מוסיפות עצים, מזג אוויר חי, ML, וישראליות.
+            """
+        )
+
+    st.divider()
+
+    # ── הפער ש-SHADY סוגרת ──────────────────────────────────────────────────────
+    st.markdown(
+        """
+        <div style="background:#eafaf1;border-right:6px solid #1e8449;padding:18px 22px;border-radius:8px;margin:10px 0;">
+        <div dir="rtl" style="font-size:14px;color:#196f3d;font-weight:600;margin-bottom:6px;">הפער שאף אחד עדיין לא סגר</div>
+        <div dir="rtl" style="font-size:18px;line-height:1.7;color:#1c1c1c;unicode-bidi:embed;text-align:right;">
+        שלושת מקורות הבסיס מוכיחים ש-<b>(א)</b> הטכנולוגיה לניתוח רשתות רחובות בשלה,
+        <b>(ב)</b> השפעת הצל על נוחות תרמית מכומתת ומובהקת, ו-<b>(ג)</b> הולכי רגל אכן בוחרים אקטיבית במסלולים מוצלים.
+        המחקר העדכני ביותר הוכיח שניתוב-מוצל ישים תיאורטית — אבל <b>רק עבור צל מבנים, רק בערים מערביות, וללא דאטה דינמי</b>.
+        <br><br>
+        <span dir="rtl"><b>\u200FSHADY היא הראשונה שמשלבת את כל ארבעת הצירים:</b>
+        רשת רחובות + צל מבנים + חופת עצים + מזג אוויר חי + ML על דאטה ישראלי —
+        ברזולוציה של מקטע רחוב בודד.</span>
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── שורת השפעה על הפרויקט ──────────────────────────────────────────────────
+    with st.expander("📌 שורת השפעה על הפרויקט — מה הסקירה שינתה אצלנו?"):
+        st.markdown(
+            """
+            - **לא נבנה גרף רחובות מאפס** (Boeing) — נשתמש ב-OSMnx כתשתית.
+            - **שני פיצ'רים נפרדים לצל** (Park) — `tree_canopy_ratio` ו-`mean_building_height` ייכנסו למודל בנפרד, ולא כפיצ'ר מאוחד.
+            - **סקאלה 1-10 ולא מעלות** (Lin) — הקשר בין חשיפה לנוחות אינו לינארי, סקאלה אינטואיטיבית מתאימה יותר.
+            - **המיקום שלנו במפת המתחרים** (Sulzer & Bönisch) — אנחנו לא חופרות באותה אדמה; אנחנו מוסיפות 4 נדבכים שלא קיימים אצלם.
+            """
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — EDA
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_eda:
     st.title("📊 ניתוח נתוני המבנים – תל אביב")
