@@ -76,6 +76,13 @@ def load_trees() -> pd.DataFrame:
     df = pd.read_parquet("data/national_canopy_clean.parquet")
     return df[["lat", "lon", "canopy_area_m2", "area_class"]].dropna(subset=["lat", "lon"])
 
+@st.cache_data
+def load_trees_full() -> pd.DataFrame:
+    # טוען את כל העמודות המספריות + הקטגוריות לטאב ה-EDA
+    df = pd.read_parquet("data/national_canopy_clean.parquet")
+    return df[["OBJECTID", "canopy_perimeter_m", "canopy_area_m2",
+               "lon", "lat", "Geometry_Type", "area_class"]].copy()
+
 buildings = load_buildings()
 trees = load_trees()
 
@@ -103,8 +110,9 @@ elif src_filter == "מחושב בלבד":
     df = df[df["height_source"] == "imputed"]
 
 # ── טאבים ──────────────────────────────────────────────────────────────────────
-tab_problem, tab_lit, tab_market, tab_eda, tab_map, tab_nav, tab_about = st.tabs([
-    "🎯 למידת הבעיה", "📚 סקירת ספרות", "🏪 סקר שוק", "📊 ניתוח נתונים", "🗺️ מפה", "🚶 ניווט", "ℹ️ אודות"
+tab_problem, tab_lit, tab_market, tab_eda, tab_trees, tab_map, tab_nav, tab_about = st.tabs([
+    "🎯 למידת הבעיה", "📚 סקירת ספרות", "🏪 סקר שוק", "📊 ניתוח נתונים",
+    "🌳 נתוני עצים", "🗺️ מפה", "🚶 ניווט", "ℹ️ אודות"
 ])
 
 
@@ -988,6 +996,376 @@ with tab_eda:
         .reset_index(drop=True),
         use_container_width=True,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — TREES EDA (M2 · רכיב 4 מתוך 4)
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_trees:
+    st.title("🌳 נתוני עצים — חקירת נתונים (EDA)")
+    st.caption("רכיב 4 מתוך 4 בדשבורד M2 · שכבת חופת העצים")
+
+    trees_full = load_trees_full()
+    # תיקון mojibake: ה-² במקור נשמר כ-U+FFFD בקובץ
+    area_class_display = trees_full["area_class"].str.replace("�", "²", regex=False)
+
+    # ── הקדמה ─────────────────────────────────────────────────────────────────
+    # שימוש ב-unicode-bidi:embed כדי למנוע היפוך של מילים אנגליות (EDA, ML, SHADY)
+    st.markdown(
+        """
+        <div dir="rtl" style="background:#eafaf1;border-right:6px solid #1e8449;padding:18px 22px;border-radius:8px;margin:10px 0 22px 0;">
+            <div dir="rtl" style="font-size:14px;color:#196f3d;font-weight:600;margin-bottom:8px;unicode-bidi:embed;text-align:right;">
+                מה אתם הולכים לראות בעמוד הזה?
+            </div>
+            <div dir="rtl" style="font-size:17px;line-height:1.7;color:#1c1c1c;unicode-bidi:embed;text-align:right;">
+                ניתוח נתונים מלא לשכבת <b>חופת העצים</b> — הצ'קליסט המינימלי שכל פרויקט חייב,
+                בתוספת שלוש ויזואליזציות שמסבירות איך השכבה הזו תיטמע במודל הלמידה של פרויקט SHADY.
+                <br><br>
+                הנתון הקריטי: <b>אין ערכים חסרים</b> בקובץ —
+                אבל המשתנה היעד מוטה מאוד (skewed) ודורש טרנספורם לוגריתמי לפני שיוזן למודל.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 1. מקור הנתונים
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("1️⃣ מקור הנתונים")
+
+    src_c1, src_c2, src_c3 = st.columns(3)
+    with src_c1:
+        st.markdown("**🔗 מקור**")
+        st.link_button("data.gov.il", "https://data.gov.il/", use_container_width=True)
+        st.caption("מפ\"י — המרכז למיפוי ישראל")
+    with src_c2:
+        st.markdown("**📜 רישיון**")
+        st.info("CC-BY-SA 4.0\n\nשימוש חופשי בייחוס")
+    with src_c3:
+        st.markdown("**📅 תאריך הורדה**")
+        st.info("מאי 2026")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 2. גודל ומבנה (df.info)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("2️⃣ גודל ומבנה הקובץ (df.info)")
+
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("שורות", f"{len(trees_full):,}")
+    g2.metric("עמודות", f"{trees_full.shape[1]}")
+    g3.metric("פורמט", "Parquet")
+    g4.metric("פוליגונים", f"{(trees_full['Geometry_Type'] == 'Polygon').mean()*100:.2f}%")
+
+    st.markdown("**טיפוסי נתונים (dtypes):**")
+    info_df = pd.DataFrame({
+        "עמודה": trees_full.columns,
+        "טיפוס": trees_full.dtypes.astype(str).values,
+        "Non-Null": trees_full.notna().sum().values,
+        "תיאור": [
+            "מזהה ייחודי (Primary Key)",
+            "היקף הפוליגון של חופת העץ (מטרים)",
+            "שטח הפוליגון של חופת העץ (מ\"ר) — משתנה היעד",
+            "קואורדינטת אורך (WGS84)",
+            "קואורדינטת רוחב (WGS84)",
+            "סוג הגיאומטריה — 231,218 Polygon + 16 MultiPolygon",
+            "קבוצת גודל (7 בקטים) — בינוי של canopy_area_m2",
+        ],
+    })
+    # st.dataframe חתך את הטקסטים בעמודות; column_config עם רוחב מפורש פותר זאת
+    st.dataframe(
+        info_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "עמודה":   st.column_config.TextColumn(width="medium"),
+            "טיפוס":   st.column_config.TextColumn(width="small"),
+            "Non-Null": st.column_config.NumberColumn(width="small", format="%d"),
+            "תיאור":   st.column_config.TextColumn(width="large"),
+        },
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 3. df.describe()
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("3️⃣ סטטיסטיקה תיאורית (df.describe)")
+
+    # רשימה אחת לcorrelation (כולל lat/lon לבדיקת קשרים גיאוגרפיים)
+    numeric_cols = ["canopy_perimeter_m", "canopy_area_m2", "lat", "lon"]
+
+    # ב-describe מציגים רק את שני המשתנים הענייניים — lat/lon כקואורדינטות
+    # אינם "מדידים סטטיסטיים" במובן הקלאסי. transpose כדי שהמדדים יהיו עמודות.
+    # אין round() מוקדם — שמירת רזולוציה מלאה כדי שערכי מינימום זעירים לא יעוגלו ל-0.
+    desc_he = (
+        trees_full[["canopy_perimeter_m", "canopy_area_m2"]]
+        .describe()
+        .T
+    )
+    desc_he.index = ["היקף חופה (מ')", 'שטח חופה (מ"ר)']
+    desc_he.columns = [
+        "מספר רשומות", "ממוצע", "סטיית תקן", "מינימום",
+        "אחוזון 25%", "חציון", "אחוזון 75%", "מקסימום",
+    ]
+    # פורמט שונה לכל מדד — מינימום ב-4 ספרות מובהקות כדי ש-0.000019 יוצג אמת
+    stat_formats = {
+        "מספר רשומות": "%d",
+        "ממוצע":      "%.2f",
+        "סטיית תקן":  "%.2f",
+        "מינימום":    "%.4g",
+        "אחוזון 25%": "%.2f",
+        "חציון":      "%.2f",
+        "אחוזון 75%": "%.2f",
+        "מקסימום":   "%.2f",
+    }
+    st.dataframe(
+        desc_he,
+        use_container_width=True,
+        column_config={col: st.column_config.NumberColumn(width="small", format=fmt)
+                       for col, fmt in stat_formats.items()},
+    )
+
+    st.caption(
+        '💡 הפער הקיצוני בין החציון של שטח החופה (15.9 מ"ר), הממוצע (71.2 מ"ר) '
+        'והמקסימום (50,641 מ"ר) מעיד על התפלגות עם זנב ימני ארוך מאוד — '
+        'נטפל בכך בטרנספורם לוגריתמי בויז\' #1.'
+        '<br><span style="font-size:12px;color:#666;">'
+        'המינימום (~0.000019 מ"ר) הוא ספלינטר פוליגונלי בקובץ המקור — '
+        'הסינון <code>canopy_area_m2 &gt; 0</code> ב-pipeline הניקוי שלך השאיר אותו כי הוא טכנית חיובי.'
+        '</span>',
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 4. ערכים חסרים
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("4️⃣ ערכים חסרים — כמה · איפה · למה")
+
+    nan_counts = trees_full.isna().sum()
+    if nan_counts.sum() == 0:
+        st.success(
+            "✅ **אפס ערכים חסרים בכל 7 העמודות** (231,234 שורות מלאות).\n\n"
+            "**למה?** הקובץ הגולמי מ-data.gov.il נוקה ב-pipeline מקדים:\n"
+            "- שורות עם גיאומטריות פגומות או ריקות הוסרו\n"
+            "- שורות עם שטח/היקף לא-חיובי הוסרו (`canopy_area_m2 > 0`)\n"
+            "- שורות עם קואורדינטות מחוץ לגבולות ישראל הוסרו\n"
+            "- כפילויות גיאומטריה הוסרו\n\n"
+            "העמודה `area_class` נוצרה במכוון מתוך `canopy_area_m2` באמצעות `pd.cut` — "
+            "כדי לחלק את **משתנה היעד** ל-7 קבוצות גודל "
+            
+        )
+    else:
+        st.warning(f"❌ נמצאו {nan_counts.sum()} NaN")
+        st.dataframe(nan_counts[nan_counts > 0].to_frame("חסרים"))
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 5. ויז' #1 — התפלגות משתנה היעד
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("5️⃣ ויז' #1 · התפלגות משתנה היעד — `canopy_area_m2`")
+
+    v1c1, v1c2 = st.columns(2)
+    with v1c1:
+        st.markdown("**היסטוגרמה (Y בסקאלת log)**")
+        fig_h, ax_h = plt.subplots(figsize=(6, 4))
+        # בינים מפורשים ברוחב 5 מ"ר בטווח [0, 200] — אחרת bins=60 פורס בינים
+        # על כל הטווח (עד 50,641 מ"ר) וכמעט הכל נופל לבין הראשון.
+        hist_bins = np.arange(0, 205, 5)
+        ax_h.hist(
+            trees_full["canopy_area_m2"], bins=hist_bins,
+            color="#27ae60", alpha=0.85, log=True,
+            edgecolor="white", linewidth=0.6,
+        )
+        ax_h.set_xlabel("Canopy Area (m²)")
+        ax_h.set_ylabel("Count (log scale)")
+        ax_h.set_title("Distribution of canopy_area_m2")
+        ax_h.set_xlim(0, 200)
+        st.pyplot(fig_h, use_container_width=True)
+        plt.close(fig_h)
+        st.caption(
+            '💡 כל עמודה = בין ברוחב 5 מ"ר. ציר Y לוגריתמי. '
+            'הגובה היורד חד משמאל לימין הוא הסימן הוויזואלי של ה-skew הימני — '
+            'יותר עצים קטנים מאשר גדולים, וההפרש בין הקטגוריות מסדר גודל. '
+            'חתכנו ב-200 מ"ר כי מעבר לכך הזנב דליל מאוד (נראה בקטגוריית "100+" בגרף השני).'
+        )
+
+    with v1c2:
+        st.markdown("**Bar chart לפי `area_class`**")
+        ac_counts = area_class_display.value_counts()
+        ac_order = ["0-1 m²", "1-5 m²", "5-10 m²", "10-25 m²", "25-50 m²", "50-100 m²", "100+ m²"]
+        ac_counts = ac_counts.reindex([c for c in ac_order if c in ac_counts.index])
+        fig_b, ax_b = plt.subplots(figsize=(6, 4))
+        ax_b.bar(range(len(ac_counts)), ac_counts.values, color="#16a085")
+        for i, v in enumerate(ac_counts.values):
+            ax_b.text(i, v + 500, f"{v:,}", ha="center", fontsize=8)
+        ax_b.set_xticks(range(len(ac_counts)))
+        ax_b.set_xticklabels(ac_counts.index, rotation=30, ha="right", fontsize=9)
+        ax_b.set_ylabel("Count")
+        ax_b.set_title("Canopy size categories")
+        st.pyplot(fig_b, use_container_width=True)
+        plt.close(fig_b)
+        st.caption("💡 הקטגוריה השכיחה (10-25 מ\"ר) מתאימה לעץ בוגר טיפוסי בעיר — הגיוני לאוכלוסיית עצי רחוב.")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 6. Boxplot למשתנים מספריים
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("6️⃣ Boxplot למשתנים מספריים")
+
+    fig_bp, axs_bp = plt.subplots(1, 2, figsize=(11, 3.8))
+
+    axs_bp[0].boxplot(trees_full["canopy_perimeter_m"], vert=False,
+                     patch_artist=True, boxprops=dict(facecolor="#a9dfbf"))
+    axs_bp[0].set_xscale("log")
+    axs_bp[0].set_title("canopy_perimeter_m (log scale)")
+    axs_bp[0].set_xlabel("meters")
+
+    axs_bp[1].boxplot(trees_full["canopy_area_m2"], vert=False,
+                     patch_artist=True, boxprops=dict(facecolor="#82e0aa"))
+    axs_bp[1].set_xscale("log")
+    axs_bp[1].set_title("canopy_area_m2 (log scale)")
+    axs_bp[1].set_xlabel("m²")
+
+    plt.tight_layout()
+    st.pyplot(fig_bp, use_container_width=True)
+    plt.close(fig_bp)
+
+    st.caption(
+        "💡 ב-Boxplot ליניארי הקופסה הייתה נראית כקו דק והכל מעליה outliers. "
+        "סקאלת log חושפת שגם בתוך ה-IQR יש פיזור משמעותי — לא רק ערכים חריגים."
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 7. ויז' #2 — Heatmap קורלציות
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("7️⃣ ויז' #2 · Heatmap קורלציות")
+
+    corr_df = trees_full[numeric_cols].corr().round(3)
+    fig_c, ax_c = plt.subplots(figsize=(6, 5))
+    im = ax_c.imshow(corr_df.values, cmap="RdBu_r", vmin=-1, vmax=1)
+    ax_c.set_xticks(range(len(corr_df.columns)))
+    ax_c.set_yticks(range(len(corr_df.columns)))
+    ax_c.set_xticklabels(corr_df.columns, rotation=30, ha="right")
+    ax_c.set_yticklabels(corr_df.columns)
+    for i in range(len(corr_df)):
+        for j in range(len(corr_df)):
+            ax_c.text(j, i, f"{corr_df.values[i, j]:.2f}", ha="center", va="center",
+                      color="white" if abs(corr_df.values[i, j]) > 0.5 else "black",
+                      fontsize=10)
+    fig_c.colorbar(im, ax=ax_c, shrink=0.7)
+    ax_c.set_title("Pearson correlation — numeric features")
+    st.pyplot(fig_c, use_container_width=True)
+    plt.close(fig_c)
+
+    st.info(
+        "💡 **Multicollinearity מובהקת:** `canopy_perimeter_m` ו-`canopy_area_m2` "
+        "מקושרים חזק — צפוי, כי עץ עם חופה גדולה גם בעל היקף גדול. "
+        "**במודל ניקח רק אחד מהשניים** (area), כדי למנוע מולטיקולינאריות שתפגע ב-Linear Regression Baseline."
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 8. ויז' #3 — ייחודי לדומיין: hexbin
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("8️⃣ ויז' #3 · פיזור גיאוגרפי — Hexbin של גודל החופה הממוצע")
+
+    fig_hex, ax_hex = plt.subplots(figsize=(9, 8))
+    hb = ax_hex.hexbin(
+        trees_full["lon"], trees_full["lat"],
+        C=trees_full["canopy_area_m2"],
+        reduce_C_function=np.mean,
+        gridsize=45,
+        cmap="Greens",
+        mincnt=3,
+        linewidths=0.1,
+        edgecolors="white",
+    )
+    cb = fig_hex.colorbar(hb, ax=ax_hex, shrink=0.7)
+    cb.set_label("Mean canopy area per hex (m²)")
+    ax_hex.set_xlabel("Longitude")
+    ax_hex.set_ylabel("Latitude")
+    # matplotlib לא תומך ב-RTL — לכן הכותרת באנגלית בלבד, ההסבר בעברית מופיע ב-subheader וב-caption
+    ax_hex.set_title("Tel Aviv — Where are the big trees?  (each hex = mean canopy_area_m2)")
+    # תיקון יחס lat/lon ברוחב 32° (cos(32°)≈0.847)
+    ax_hex.set_aspect(1 / np.cos(np.radians(32.08)))
+    st.pyplot(fig_hex, use_container_width=True)
+    plt.close(fig_hex)
+
+    st.caption(
+        "💡 **למה hexbin ולא HeatMap?** HeatMap בטאב המפה מראה *כמה* עצים בכל מקום (צפיפות). "
+        "כאן אנחנו מראים שאלה אחרת — *כמה גדולים* העצים באזור. "
+        "ירוק כהה = אזורים עם עצים גדולים (פארקים, רחובות צל); ירוק בהיר = הרבה עצים קטנים."
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 9. תובנות → השפעה על המודל
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("9️⃣ תובנות מפתח → איך זה משפיע על מודל ה-ML")
+
+    # תיקון בידיריקציה: ערבוב עברית + קוד אנגלי + סימני פיסוק שובר את ברירת המחדל של Markdown.
+    # כאן עוטפים כל פסקה ב-HTML עם dir="rtl" + unicode-bidi:embed (זהה לטכניקה ב-tab_lit וב-tab_market).
+
+    n_poly = int((trees_full["Geometry_Type"] == "Polygon").sum())
+    n_multi = int((trees_full["Geometry_Type"] == "MultiPolygon").sum())
+
+    insight_c1, insight_c2 = st.columns(2)
+    with insight_c1:
+        # חשוב: HTML צמוד לשמאל (ללא הזחה) כי Markdown מפרש 4+ רווחים כ-code block
+        st.markdown(
+            f"""
+<div dir="rtl" style="unicode-bidi:embed;text-align:right;line-height:1.75;">
+<h4 style="margin-top:0;">📈 על המשתנים</h4>
+
+<p><b>1. שטח החופה הוא המשתנה המרכזי</b><br>
+הזנב הימני הארוך (מקסימום של 50,641 מ"ר!) מצביע על כך שלפני שימוש כפיצ'ר במודל
+כדאי לעבור לטרנספורם לוגריתמי, אחרת עצי-ענק פארקיים ישתלטו על המשקל של הרגרסיה.</p>
+
+<p><b>2. ההיקף יוצא מהמודל</b><br>
+קורלציה של 0.96 עם השטח — זוהי מולטיקולינאריות מובהקת.
+נשמור רק את השטח כפיצ'ר; שניהם נותנים את אותה אינפורמציה.</p>
+
+<p><b>3. סוג הגיאומטריה יוצא מהמודל</b><br>
+מתוך {n_poly + n_multi:,} רשומות: <b>{n_poly:,}</b> פוליגונים רגילים +
+<b>{n_multi}</b> מולטי-פוליגונים (חופות עץ שצולמו עם פערים בין ענפים).
+ההפרש זניח ({n_multi/(n_poly+n_multi)*100:.3f}%) — וריאנס כמעט אפס, אין כאן אינפורמציה מבדילה.
+כל מולטי-פוליגון נחשב כעץ אחד; השטח וההיקף שלו מסוכמים על-פני המקטעים.</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    with insight_c2:
+        st.markdown(
+            """
+<div dir="rtl" style="unicode-bidi:embed;text-align:right;line-height:1.75;">
+<h4 style="margin-top:0;">🗺️ על השכבה במודל</h4>
+
+<p><b>4. הפיצ'ר במודל יהיה יחס חופה — לא שטח גולמי</b><br>
+כפי שצוין ב-CLAUDE.md, ה-Spatial Join עושה buffer של 5 מטר סביב כל קשת רחוב,
+והפיצ'ר שייכנס למודל הוא <b>שטח חופה חלקי שטח buffer</b>. הקובץ כאן הוא רק הקלט הגולמי.</p>
+
+<p><b>5. הפיזור הגיאוגרפי לא אחיד</b><br>
+ה-hexbin בויז' #3 מראה הבדלים גדולים בין שכונות — מודל לינארי פשוט לא ייתפוס את התבנית הזו.
+כדאי לבדוק Random Forest כ-Baseline שני כדי לתפוס קשרים לא-לינאריים.</p>
+
+<p><b>6. אין NaN — לא צריך imputation לעצים</b><br>
+בניגוד לשכבת המבנים (~4% גובה מחושב במודל), שכבת העצים נקייה לחלוטין.
+חוסכים שלב הימפוטציה.</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
