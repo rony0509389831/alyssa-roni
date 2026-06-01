@@ -1175,12 +1175,14 @@ with tab_eda:
         plt.close(fig2)
 
     # ── תובנה בולטת ───────────────────────────────────────────────────────────
-    tall_pct = (buildings["height"] > 20).mean() * 100
+    le20_pct = (buildings["height"] <= 20).mean() * 100
+    median_h = buildings["height"].median()
     st.info(
-        f"💡 **תובנה:** 96.3% מהמבנים בת\"א יש להם גובה רשום מהעירייה. "
-        f"הגובה החציוני הוא **10.6 מ'** (~3 קומות) — עיר של בניינים נמוכים. "
-        f"רק **{tall_pct:.1f}%** מהמבנים גבוהים מ-20 מ', אך הם אחראים לרוב הצל "
-        f"על המדרכות בשעות הצהריים."
+        f"💡 **תובנה:** למרות הדימוי של ת\"א כ\"עיר הגדולה\" עם קו רקיע גבוה, "
+        f"הנתונים מראים שרוב ההשפעה של הצל על המדרכה מגיעה מבניינים בגובה של עד 20 מ': "
+        f"הגובה החציוני הוא רק **{median_h:.1f} מ'** (~3 קומות), ו-**{le20_pct:.1f}%** "
+        f"מהמבנים נמוכים מ-20 מ'. אלו הרוב המוחלט של המבנים בעיר — והם שמכתיבים את "
+        f"ההצללה ברמת הרחוב."
     )
 
     # ── חלק ב׳: עצים ─────────────────────────────────────────────────────────
@@ -1221,10 +1223,14 @@ with tab_eda:
         st.pyplot(fig_h, use_container_width=True)
         plt.close(fig_h)
         st.info(
-            '💡 **תובנה:** skew קיצוני — חציון 15.9 m² אל מול מקסימום 50,641 m². '
-            'לפני שימוש כפיצ\'ר במודל: **log-transform**. '
-            'בנוסף: היקף-חופה מקורל עם שטח-חופה ב-r=0.96 → **נשמר רק שטח** (drop perimeter). '
-            'הפיצ\'ר שיכנס למודל: **tree_canopy_ratio** = שטח חופה ÷ שטח buffer סביב הקשת.'
+            f'💡 **תובנה:** עמודת המטרה היא **שטח החופה** (`canopy_area_m2`) ולא ההיקף — '
+            f'השטח מודד ישירות את כמות ההצללה (השטח שחוסם את השמש), בעוד שההיקף מודד רק את '
+            f'אורך הקצה; שתי צורות עם היקף זהה יכולות להצל שטח שונה לחלוטין (וממילא השניים '
+            f'מקורלים ב-r=0.96, כך שאיבדנו מעט מאוד מידע בבחירת השטח). '
+            f'ה**הבדל הגדול בין החציון ({trees_full["canopy_area_m2"].median():.1f} m²) '
+            f'לממוצע ({trees_full["canopy_area_m2"].mean():.1f} m²)** מעיד על ערכי קיצון '
+            f'וטווח רחב מאוד — מערכים קטנים מ-1 ועד ~{trees_full["canopy_area_m2"].max():,.0f} m². '
+            f'לכן **נשקול שימוש בסקאלה לוגריתמית** כדי לעבוד טוב יותר עם ההפרשים הגדולים.'
         )
 
     with tree_col2:
@@ -1246,9 +1252,8 @@ with tab_eda:
         plt.close(fig_hex)
         st.markdown(
             '<p dir="rtl" style="font-size:0.82rem;color:#888;">'
-            '💡 צפון תל אביב ושדרות ירוקות (כגון שדרות רוטשילד) מציגים ריכוז חופת עצים גבוה. '
-            'דרום העיר ואזורי תעשייה סובלים ממחסור בעצים — '
-            'שם ה-TCI יסתמך בעיקר על צל מבנים.</p>',
+            '💡 ניתן לראות צפיפות חופה גדולה בעיקר בצפון-מערב העיר — '
+            'אזור פארק הירקון והשטחים הירוקים הגדולים.</p>',
             unsafe_allow_html=True,
         )
 
@@ -1296,8 +1301,6 @@ with tab_eda:
         fig_sun, ax_sun = plt.subplots(figsize=(6, 4))
         ax_sun.plot(_hours_sun, _alts_s, color="#f39c12", lw=2.5, marker="o", markersize=4, label="Summer (Jun 21)")
         ax_sun.plot(_hours_sun, _alts_w, color="#2980b9", lw=2,   marker="s", markersize=4, linestyle="--", label="Winter (Dec 21)")
-        ax_sun.axhline(20, color="#e74c3c", lw=1.5, linestyle=":", label="20° threshold (long shadow)")
-        ax_sun.fill_between(_hours_sun, 0, [min(a, 20) for a in _alts_s], alpha=0.12, color="#27ae60")
         ax_sun.set_xlabel("Hour (UTC)")
         ax_sun.set_ylabel("Sun Altitude (°)")
         ax_sun.set_title("Sun Altitude — Tel Aviv | Summer vs. Winter")
@@ -1309,16 +1312,20 @@ with tab_eda:
         plt.close(fig_sun)
 
     with sun_col2:
-        st.markdown("**טבלה: שעות השמש (קיץ)**")
+        st.markdown("**טבלה: אורך צל לאורך היום (קיץ)**")
+        _H_REF = 20.0  # גובה מבנה ייחוס (מ')
         _sun_rows_html = ""
         for _sh, _sa2 in zip(_hours_sun, _alts_s):
-            _sbg = "#f0fff4" if _sa2 < 20 else "#ffffff"
-            _sshadow = "✅ כן" if _sa2 < 20 else "☀️ לא"
+            if _sa2 > 0:
+                _slen = _H_REF / np.tan(np.radians(_sa2))
+                _slen_txt = f"{min(_slen, 5 * _H_REF):.0f} מ'"
+            else:
+                _slen_txt = "—"
             _sun_rows_html += (
-                f'<tr style="background:{_sbg};border-bottom:1px solid #eee;">'
+                f'<tr style="border-bottom:1px solid #eee;">'
                 f'<td style="padding:7px 14px;text-align:center;font-family:monospace;font-size:13px;">{_sh}:00</td>'
                 f'<td style="padding:7px 14px;text-align:center;font-size:13px;">{_sa2:.1f}°</td>'
-                f'<td style="padding:7px 14px;text-align:center;font-size:15px;">{_sshadow}</td>'
+                f'<td style="padding:7px 14px;text-align:center;font-size:13px;">{_slen_txt}</td>'
                 "</tr>"
             )
         st.markdown(
@@ -1327,19 +1334,18 @@ with tab_eda:
   <thead><tr style="background:#f4f6f8;position:sticky;top:0;">
     <th style="padding:9px 14px;border-bottom:2px solid #ccc;text-align:center;font-size:13px;">שעה (UTC)</th>
     <th style="padding:9px 14px;border-bottom:2px solid #ccc;text-align:center;font-size:13px;">altitude (°)</th>
-    <th style="padding:9px 14px;border-bottom:2px solid #ccc;text-align:center;font-size:13px;">צל ארוך?</th>
+    <th style="padding:9px 14px;border-bottom:2px solid #ccc;text-align:center;font-size:13px;">אורך צל (h=20מ')</th>
   </tr></thead>
   <tbody>{_sun_rows_html}</tbody>
 </table></div>""",
             unsafe_allow_html=True,
         )
-        st.caption("✅ = altitude < 20° → צל מבנה 10 מ' = 30 מ' על המדרכה.")
+        st.caption("אורך הצל מחושב לפי L = h / tan(altitude) עבור מבנה בגובה 20 מ' (חתוך ל-100 מ').")
 
-    _shadow_hours = sum(1 for a in _alts_s if 0 < a < 20)
     st.info(
-        f"💡 ** תובנה:** בקיץ יש רק **{_shadow_hours} שעות ביום** שבהן גובה השמש נמוך מ-20° — "
-        "בשעות אלה אפילו מבנה נמוך יחסית מספיק לייצר צל משמעותי. "
-        "**המודל צריך ללמוד שה-sun_altitude הנמוך מקטין TCI גם בהיעדר עצים.**"
+        "💡 **תובנה:** בשעות שבהן המודל שלנו \"הכי נחוץ\" (שיא הקיץ, שיא החום ביום), "
+        "ההשפעה של המבנים תורגש הרבה פחות בגלל זווית השמש — הצל קצר; "
+        "וסביר להניח שההשפעה של העצים ביחס לבניינים תגדל."
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1394,7 +1400,7 @@ with tab_eda:
         axs_w[1].set_xticks(range(12))
         axs_w[1].set_xticklabels(_months_en, rotation=45, ha="right", fontsize=8)
         axs_w[1].set_ylabel("%")
-        axs_w[1].set_title("Cloud Cover by Month (🌞 ≤20% | ⛅ >20%)")
+        axs_w[1].set_title("Cloud Cover by Month (≤20% sunny | >20% cloudy)")
         axs_w[1].axhline(20, color="#7f8c8d", lw=1.5, linestyle="--", alpha=0.7)
 
         plt.tight_layout()
@@ -1403,10 +1409,10 @@ with tab_eda:
 
         _sunny_count = sum(1 for c in _clds if c <= 20)
         st.info(
-            f"💡 **ערכים דומיננטיים:** ת\"א **שמשית ב-{_sunny_count} מתוך 12 חודשים** (cloud_cover ≤ 20%). "
-            f"בקיץ (מאי–ספטמבר) כיסוי ענן ממוצע של **{_avg_c_sum:.0f}% בלבד** — "
-            "המשמעות: **רוב הדוגמאות שהמודל יראה יהיו בתנאי שמש מלאה**. "
-            "חשוב לוודא שאין bias לעבר TCI גבוה — לייצג גם שעות בוקר ועננות בסט האימון."
+            f"💡 **תובנה:** הנתונים מראים בצורה טובה והגיונית את הזמן שבו אופטימלי להשתמש "
+            f"ב-SHADY — ת\"א שמשית ב-**{_sunny_count} מתוך 12 חודשים** (cloud_cover ≤ 20%). "
+            "חשוב לזכור שהנתונים מציגים כיסוי עננים **ממוצע** לחודש, אך כיסוי עננים גדול מאוד "
+            "(למשל ביום מעונן ספציפי) יכול להוריד לגמרי את הצורך בניווט מבוסס צל."
         )
     else:
         st.warning("⚠️ לא ניתן לטעון את data/climate_fallback.json")
