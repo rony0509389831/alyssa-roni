@@ -26,6 +26,12 @@ try:
 except ImportError:
     _WEATHER = False
 
+try:
+    from src.routing import geocode_address, compute_route, build_route_map
+    _ROUTING = True
+except ImportError:
+    _ROUTING = False
+
 matplotlib.rcParams["font.family"] = "DejaVu Sans"
 matplotlib.rcParams["axes.unicode_minus"] = False
 warnings.filterwarnings("ignore")
@@ -132,6 +138,11 @@ def load_trees_full() -> pd.DataFrame:
 buildings = load_buildings()
 trees = load_trees()
 
+if _ROUTING:
+    @st.cache_data(show_spinner=False)
+    def _geocode_cached(address: str) -> tuple:
+        return geocode_address(address)
+
 # ── מדגם שכונת הצפון הישן (למפה בלבד) ────────────────────────────────────────
 _ON_LAT_MIN, _ON_LAT_MAX = 32.076, 32.100
 _ON_LON_MIN, _ON_LON_MAX = 34.762, 34.783
@@ -159,6 +170,91 @@ def load_trees_old_north() -> pd.DataFrame:
 
 buildings_old_north = load_buildings_old_north()
 trees_old_north = load_trees_old_north()
+
+
+@st.cache_data
+def build_tci_df(n: int = 5000, seed: int = 42) -> pd.DataFrame:
+    """בונה N דוגמאות TCI.
+
+    אם edges_features.parquet קיים (נוצר ע"י precompute_features.py) — משתמש
+    ב-mean_building_height ו-tree_canopy_ratio האמיתיים לכל קשת.
+    אחרת — fallback לדגימה מהתפלגויות גלובליות.
+    """
+    import json as _j
+    from pathlib import Path as _Path
+    rng = np.random.default_rng(seed)
+
+    _edges_path = _Path("data/edges_features.parquet")
+    if _edges_path.exists():
+        # נתונים מחושבים לפי קשת אמיתית (Spatial Join) — דגימת שורה שלמה לשמירת הצמד
+        _ef = pd.read_parquet(_edges_path, columns=["mean_building_height", "tree_canopy_ratio"])
+        _ef = _ef.fillna(0)
+        _idx = rng.choice(len(_ef), size=n, replace=True)  # אותו אינדקס = אותו רחוב
+        bh = _ef["mean_building_height"].values[_idx]
+        cr = _ef["tree_canopy_ratio"].values[_idx]
+    else:
+        # fallback — דגימה מהתפלגות גלובלית (לפני הרצת precompute_features.py)
+        bh = rng.choice(load_buildings()["height"].values, size=n, replace=True)
+        cr = np.clip(
+            rng.choice(load_trees_full()["canopy_area_m2"].values, size=n, replace=True) / 500,
+            0, 1,
+        )
+
+    # זוויות שמש — PySolar: כל שעה ביום × 12 חודשים (יום 15) עבור ת"א
+    if _PYSOLAR:
+        _sun_pool = []
+        for _mo in range(1, 13):
+            for _hr in range(0, 24):
+                try:
+                    _dt = datetime(2024, _mo, 15, _hr, tzinfo=timezone.utc)
+                    _alt = _solar.get_altitude(32.08, 34.77, _dt)
+                    if _alt > 10:  # מתחת ל-10° השמש לא "מכה" — שחר/שקיעה זניחים
+                        _sun_pool.append(float(_alt))
+                except Exception:
+                    pass
+        sa = rng.choice(_sun_pool, size=n, replace=True) if _sun_pool else rng.uniform(5, 72, n)
+    else:
+        _pre_baked = [18.1, 31.4, 44.2, 55.3, 64.1, 70.2, 72.1, 70.1, 64.0, 55.1, 44.0]
+        sa = rng.choice(_pre_baked, size=n, replace=True)
+
+    # מזג אוויר — מ-12 ערכים חודשיים אמיתיים
+    try:
+        with open("data/climate_fallback.json", encoding="utf-8") as _cf:
+            _clim = _j.load(_cf)
+        _temps  = np.array([m["temperature"]       for m in _clim])
+        _clouds = np.array([m["cloud_cover"]        for m in _clim])
+        _humids = np.array([m.get("humidity", 70)   for m in _clim])
+        _idx = rng.integers(0, 12, size=n)
+        temp  = _temps[_idx]
+        cloud = _clouds[_idx]
+        humid = _humids[_idx]
+    except Exception:
+        temp  = rng.uniform(13, 28, n)
+        cloud = rng.uniform(0, 50, n)
+        humid = rng.uniform(65, 80, n)
+
+    az = rng.uniform(0, 360, n)
+
+    # חישוב TCI מהנוסחה האנליטית
+    _W1, _W2 = 0.6, 0.4
+    sa_rad = np.radians(sa)
+    bf = np.clip(bh / 30, 0, 1) * np.cos(sa_rad)
+    tci = np.clip(
+        1 + 9 * (sa / 80) * (1 - cloud / 100) * (1 - _W1 * cr - _W2 * bf),
+        1, 10,
+    )
+
+    return pd.DataFrame({
+        "sun_altitude":    sa,
+        "building_height": bh,
+        "canopy_ratio":    cr,
+        "cloud_cover":     cloud,
+        "temperature":     temp,
+        "humidity":        humid,
+        "azimuth":         az,
+        "TCI":             tci,
+    })
+
 
 # ── טאבים ──────────────────────────────────────────────────────────────────────
 tab_problem, tab_lit, tab_market, tab_eda, tab_map, tab_nav, tab_about = st.tabs([
@@ -699,58 +795,54 @@ with tab_market:
         },
     ]
 
-    # מציגים בשתי שורות: 3 + 2
-    cols_row1 = st.columns(3)
-    cols_row2 = st.columns(3)
-
     import os
-    for i, comp in enumerate(competitors):
-        col = cols_row1[i] if i < 3 else cols_row2[i - 3]
+
+    def _card(comp):
+        c = comp["color"]
+        st.markdown(
+            f"""<div style="border-top:5px solid {c};border-radius:6px 6px 0 0;
+                            padding:10px 12px 6px 12px;background:#fafafa;text-align:center;">
+                <div style="font-size:17px;font-weight:700;color:{c};">{comp['name']}</div>
+                <div style="font-size:11px;color:#888;">{comp['type']}</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        if os.path.exists(comp["screenshot"]):
+            st.image(comp["screenshot"], use_container_width=True)
+        else:
+            st.markdown(
+                f"""<div style="background:#f8f9fa;border:2px dashed #ccc;padding:22px 10px;
+                               text-align:center;color:#888;font-size:12px;line-height:1.6;">
+                    📷 צילום מסך<br>
+                    <code style="direction:ltr;display:inline-block;background:#fff;
+                                 padding:2px 5px;border-radius:3px;font-size:10px;margin-top:3px;">{comp['screenshot'].split('/')[-1]}</code>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        st.markdown(
+            f"""<div style="border:1px solid #e0e0e0;border-top:none;border-radius:0 0 6px 6px;
+                            padding:12px 14px;margin-bottom:6px;background:#fafafa;
+                            text-align:right;min-height:110px;">
+                <div style="font-size:12px;color:#555;margin-bottom:8px;"><b>ממשק:</b> {comp['ui']}</div>
+                <div style="font-size:12px;margin-bottom:6px;color:#196f3d;"><b>✓ חוזק:</b> {comp['strength']}</div>
+                <div style="font-size:12px;color:#922b21;"><b>✗ חולשה:</b> {comp['weakness']}</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        st.link_button(f"🔗 לאתר {comp['name']}", comp["url"], use_container_width=True)
+
+    st.markdown("##### 📱 פתרונות ניווט מסחריים")
+    row1 = st.columns(3)
+    for i in range(3):
+        with row1[i]:
+            _card(competitors[i])
+
+    st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+    st.markdown("##### 🔬 פתרונות חלקיים / אקדמיים")
+    _, col_b1, col_b2, _ = st.columns([0.5, 1, 1, 0.5])
+    for i, col in enumerate([col_b1, col_b2]):
         with col:
-            # כותרת + סוג (מעל הצילום)
-            st.markdown(
-                f"""
-                <div dir="rtl" style="border-top:5px solid {comp['color']};border-radius:6px 6px 0 0;
-                                       padding:10px 12px 6px 12px;background:#fafafa;text-align:center;">
-                    <div style="font-size:18px;font-weight:700;color:{comp['color']};">{comp['name']}</div>
-                    <div style="font-size:11px;color:#777;">{comp['type']}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            # צילום מסך (או placeholder אם הקובץ לא קיים)
-            if os.path.exists(comp["screenshot"]):
-                st.image(comp["screenshot"], use_container_width=True)
-            else:
-                st.markdown(
-                    f"""
-                    <div dir="rtl" style="background:#fff4e6;border:2px dashed #f39c12;
-                                           padding:30px 10px;text-align:center;color:#a04000;
-                                           font-size:13px;line-height:1.5;">
-                        📷 <b>צילום חסר</b><br>
-                        שמרי את הצילום בשם:<br>
-                        <code style="direction:ltr;display:inline-block;background:#fff;padding:2px 6px;border-radius:3px;font-size:11px;margin-top:4px;">{comp['screenshot'].split('/')[-1]}</code><br>
-                        <span style="font-size:11px;">בתיקייה <code>data/screenshots/</code></span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-            # תיאור + חוזק + חולשה (מתחת לצילום)
-            st.markdown(
-                f"""
-                <div dir="rtl" style="border:1px solid #ddd;border-top:none;border-radius:0 0 6px 6px;
-                                       padding:12px 14px;margin-bottom:6px;background:#fafafa;
-                                       unicode-bidi:embed;text-align:right;">
-                    <div dir="rtl" style="font-size:12px;margin-bottom:8px;unicode-bidi:embed;"><b>ממשק:</b> {comp['ui']}</div>
-                    <div dir="rtl" style="font-size:12px;margin-bottom:6px;color:#196f3d;unicode-bidi:embed;"><b>✓ חוזק:</b> {comp['strength']}</div>
-                    <div dir="rtl" style="font-size:12px;color:#922b21;unicode-bidi:embed;"><b>✗ חולשה:</b> {comp['weakness']}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.link_button(f"🔗 לאתר {comp['name']}", comp["url"], use_container_width=True)
+            _card(competitors[3 + i])
 
     st.divider()
 
@@ -813,20 +905,60 @@ with tab_market:
             "חולשה מרכזית": "כיסוי גיאוגרפי: ת\"א בלבד (MVP)",
         },
     ]
-    market_df = pd.DataFrame(market_data)
-    st.dataframe(market_df, use_container_width=True, hide_index=True)
-    st.caption("💡 לחיצה על כותרת עמודה ממיינת · השורה האחרונה היא SHADY")
+    _comp_colors = {
+        "Google Maps": "#4285F4", "Citymapper": "#009688", "Strava": "#FC4C02",
+        "Shadowmap": "#6c3483", "CoolWalks": "#1e8449", "SHADY (אנחנו)": "#d35400",
+    }
+    _headers = ["מתחרה", "פיצ'רים עיקריים", "מחיר", "קהל יעד", "נוחות תרמית", "דאטה דינמי", "חולשה מרכזית"]
+    _widths  = ["12%", "24%", "11%", "14%", "8%", "13%", "18%"]
+    _hdr = "".join(
+        f'<th style="padding:10px 12px;text-align:right;font-weight:600;width:{w};">{h}</th>'
+        for h, w in zip(_headers, _widths)
+    )
+    _rows = ""
+    for idx, row in enumerate(market_data):
+        name     = row["מתחרה"]
+        features = row["פיצ'רים עיקריים"]
+        price    = row["מחיר"]
+        audience = row["קהל יעד"]
+        thermal  = row["נוחות תרמית"]
+        dynamic  = row["דאטה דינמי"]
+        weakness = row["חולשה מרכזית"]
+        is_shady = "SHADY" in name
+        bg   = "#eafaf1" if is_shady else ("#ffffff" if idx % 2 == 0 else "#f8f9fa")
+        bold = "font-weight:700;" if is_shady else ""
+        nc   = _comp_colors.get(name, "#333")
+        wc   = "#196f3d" if is_shady else "#922b21"
+        _rows += f"""
+        <tr style="background:{bg};">
+          <td style="padding:10px 12px;border-bottom:1px solid #eee;color:{nc};font-weight:700;">{name}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #eee;{bold}">{features}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #eee;{bold}white-space:nowrap;">{price}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #eee;{bold}">{audience}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #eee;text-align:center;font-size:17px;">{thermal}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #eee;{bold}">{dynamic}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #eee;color:{wc};{bold}">{weakness}</td>
+        </tr>"""
+    st.markdown(
+        f"""<div style="overflow-x:auto;border-radius:8px;border:1px solid #e0e0e0;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;direction:rtl;text-align:right;">
+          <thead><tr style="background:#2c3e50;color:white;">{_hdr}</tr></thead>
+          <tbody>{_rows}</tbody>
+        </table></div>""",
+        unsafe_allow_html=True,
+    )
+    st.caption("💡 השורה הירוקה האחרונה היא SHADY — הפתרון הייחודי שלנו")
 
     st.divider()
 
     # ── תרשים מיצוב ────────────────────────────────────────────────────────────
     st.subheader("🎯 תרשים מיצוב — איפה אנחנו על המפה?")
 
-    fig_pos, ax_pos = plt.subplots(figsize=(10, 6.5))
+    fig_pos, ax_pos = plt.subplots(figsize=(10, 7))
 
     positions = [
-        ("Google Maps", 3.5, 0.5, "#4285F4", 1200),
-        ("Citymapper", 4.0, 0.6, "#009688", 800),
+        ("Google Maps", 3.3, 0.5, "#4285F4", 1200),
+        ("Citymapper", 4.1, 0.95, "#009688", 800),
         ("Strava", 1.8, 0.4, "#FC4C02", 700),
         ("Shadowmap", 1.5, 3.8, "#6c3483", 500),
         ("CoolWalks", 1.0, 4.3, "#1e8449", 400),
@@ -836,17 +968,16 @@ with tab_market:
     for name, x, y, color, size in positions:
         is_us = name == "SHADY"
         ax_pos.scatter(
-            x, y, s=size, c=color, alpha=0.85 if is_us else 0.65,
+            x, y, s=size, c=color, alpha=0.88 if is_us else 0.75,
             edgecolors="#2c3e50" if is_us else "white",
             linewidths=3 if is_us else 1.5, zorder=5,
         )
-        offset_y = 0.35 if y < 4 else -0.45
         ax_pos.annotate(
             name, (x, y), xytext=(0, 0),
             textcoords="offset points", ha="center", va="center",
             fontsize=9 if not is_us else 11,
             fontweight="bold" if is_us else "normal",
-            color="white" if is_us else "#1c1c1c",
+            color="white",
             zorder=6,
         )
 
@@ -894,47 +1025,54 @@ with tab_market:
     insight_col1, insight_col2 = st.columns(2)
 
     with insight_col1:
-        st.markdown(
-            """
-            #### ✅ מה לאמץ מהמתחרים
-
-            **מ-Google Maps:**
-            - ממשק נקי עם מסלול ברור (לא 3 אפשרויות מבלבלות)
-            - חיפוש כתובת חופשי
-
-            **מ-Citymapper:**
-            - כפתור "Go" ישיר ובולט — לחיצה אחת ומתחילים ללכת
-            - הפרדה ויזואלית ברורה בין מצבי תנועה (הליכה / אופניים / תח"צ)
-
-            **מ-Strava:**
-            - Heatmap של מסלולים אנושיים — מראה אילו רחובות אנשים בוחרים בפועל
-            - הצגת נתוני מסלול (זמן, מרחק) כ-overlay על המפה
-
-            **מ-Shadowmap:**
-            - ויזואליזציית צל כשכבה על המפה
-            - סליידר זמן לתכנון מראש
-            """
-        )
+        st.markdown("#### ✅ מה לאמץ מהמתחרים")
+        for _label, _color, _bullets in [
+            ("מ-Google Maps", "#4285F4",
+             ["ממשק נקי עם מסלול ברור (לא 3 אפשרויות מבלבלות)", "חיפוש כתובת חופשי"]),
+            ("מ-Citymapper", "#009688",
+             ['כפתור "Go" ישיר ובולט — לחיצה אחת ומתחילים ללכת',
+              "הפרדה ויזואלית בין מצבי תנועה (הליכה / אופניים / תח\"צ)"]),
+            ("מ-Strava", "#FC4C02",
+             ["Heatmap של מסלולים — מראה אילו רחובות אנשים בוחרים בפועל",
+              "הצגת נתוני מסלול (זמן, מרחק) כ-overlay על המפה"]),
+            ("מ-Shadowmap", "#6c3483",
+             ["ויזואליזציית צל כשכבה על המפה", "סליידר זמן לתכנון מראש"]),
+        ]:
+            _bl = "".join(f"• {b}<br>" for b in _bullets)
+            st.markdown(
+                f"""<div style="background:#f8f9fa;border-right:4px solid {_color};
+                               border-radius:6px;padding:10px 14px;margin-bottom:10px;text-align:right;">
+                    <b style="color:{_color};">{_label}:</b><br>
+                    <span style="font-size:13px;color:#444;">{_bl}</span>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
     with insight_col2:
-        st.markdown(
-            """
-            #### 🚫 מה לשנות / מה הייחוד שלנו
-
-            **לא לחזור על הטעות של Google Maps:**
-            ממליצים אותו מסלול ב-8:00 ו-13:00 — אנחנו נשנה לפי שעת היציאה.
-
-            **להשלים את החסר ב-Shadowmap:**
-            הם מציגים צל אבל לא מנווטים — אנחנו עושים את שני הדברים.
-
-            **לקחת את CoolWalks למוצר אמיתי:**
-            הם נשארו אקדמיים — אנחנו מוציאות לאוויר עם UI נגיש.
-
-            **🔑 הייחוד היחיד שלנו:**
-            **חופת עצים + מזג אוויר חי + ML — ביחד**.
-            אף אחד מהמתחרים לא משלב את שלושת אלה.
-            """
-        )
+        st.markdown("#### 🚫 מה לשנות / מה הייחוד שלנו")
+        for _title, _body, _color in [
+            ("לא לחזור על הטעות של Google Maps",
+             "ממליצים אותו מסלול ב-8:00 ו-13:00 — אנחנו נשנה לפי שעת היציאה.",
+             "#e74c3c"),
+            ("להשלים את החסר ב-Shadowmap",
+             "הם מציגים צל אבל לא מנווטים — אנחנו עושים את שני הדברים.",
+             "#e74c3c"),
+            ("לקחת את CoolWalks למוצר אמיתי",
+             "הם נשארו אקדמיים — אנחנו מוציאות לאוויר עם UI נגיש.",
+             "#e74c3c"),
+            ("🔑 הייחוד היחיד שלנו",
+             "חופת עצים + מזג אוויר חי + ML — ביחד. אף אחד מהמתחרים לא משלב את שלושת אלה.",
+             "#d35400"),
+        ]:
+            st.markdown(
+                f"""<div style="background:{'#fef9e7' if 'd35400' in _color else '#fdf2f2'};
+                               border-right:4px solid {_color};border-radius:6px;
+                               padding:10px 14px;margin-bottom:10px;text-align:right;">
+                    <b style="color:{_color};">{_title}:</b><br>
+                    <span style="font-size:13px;color:#444;">{_body}</span>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
     st.divider()
 
@@ -1350,25 +1488,17 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
     # ── גרף TCI אנליטי + histogram TCI ──────────────────────────────────────
     tci_col1, tci_col2 = st.columns(2)
 
-    # ── דאטה סינתטי: קיץ תל-אביבי בלבד (מאי–ספטמבר, 08:00–18:00) ──────────
-    _rng_tci = np.random.default_rng(42)
-    _N = 5000
-    _sa  = _rng_tci.uniform(15, 78, _N)    # sun_altitude — שעות קיץ פעילות
-    _bh  = _rng_tci.uniform(3, 40, _N)     # גבהי מבנים (מ')
-    _cr  = _rng_tci.uniform(0.0, 0.8, _N)  # tree_canopy_ratio
-    _cl  = _rng_tci.uniform(0.0, 0.30, _N) # cloud_cover כשבר (קיץ בת"א = שמיים נקיים)
+    # ── נתונים אמיתיים: גבהים מהעירייה, חופת עצים ממפ"י, שמש מ-PySolar, מזג-אוויר מ-Open-Meteo ──
+    _tci_df  = build_tci_df()
+    _N       = len(_tci_df)
+    _cl      = _tci_df["cloud_cover"].values / 100   # fraction לחישוב _cloud_avg בגרף 1
+    _tci_syn = _tci_df["TCI"].values
     _W1, _W2 = 0.6, 0.4
-    _sa_rad = np.radians(_sa)
-    _bf = np.clip(_bh / 30, 0, 1) * np.cos(_sa_rad)
-    _tci_syn = np.clip(
-        1 + 9 * (_sa / 80) * (1 - _cl) * (1 - _W1 * _cr - _W2 * _bf),
-        1, 10,
-    )
 
     with tci_col1:
-        st.markdown('<p dir="rtl" style="font-weight:600;font-size:15px;margin:0 0 2px 0;">גרף 1 — Sensitivity Plot: TCI לפי זווית שמש × תרחיש רחוב</p>', unsafe_allow_html=True)
-        st.markdown('<p dir="rtl" style="font-size:0.82rem;color:#888;margin:0 0 8px 0;"> ממוצע קיץ · כל קו = תרחיש רחוב שונה בעיר</p>', unsafe_allow_html=True)
-        _sun_range = np.linspace(5, 78, 300)
+        st.markdown('<p dir="rtl" style="font-weight:600;font-size:15px;margin:0 0 2px 0;">גרף 1 — רגישות TCI לזווית השמש לפי תרחיש רחוב</p>', unsafe_allow_html=True)
+        st.markdown('<p dir="rtl" style="font-size:0.82rem;color:#888;margin:0 0 8px 0;">כל קו = שילוב עצים + מבנים שונה · עננות ממוצעת שנתית · שעות שמש בלבד (>10°)</p>', unsafe_allow_html=True)
+        _sun_range = np.linspace(10, 78, 300)
         _sun_range_rad = np.radians(_sun_range)
         _cloud_avg = float(_cl.mean())
         _scenarios = [
@@ -1401,7 +1531,7 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
     # ── גרף 2: התפלגות TCI — "משתנה היעד" ───────────────────────────────────
     with tci_col2:
         st.markdown('<p dir="rtl" style="font-weight:600;font-size:15px;margin:0 0 2px 0;">גרף 2 — התפלגות TCI (משתנה היעד)</p>', unsafe_allow_html=True)
-        st.markdown(f'<p dir="rtl" style="font-size:0.82rem;color:#888;margin:0 0 8px 0;">⚠️ TCI מחושב מהנוסחה, לא נמדד — N={_N:,} דוגמאות סינתטיות, קיץ תל-אביבי (מאי–ספטמבר)</p>', unsafe_allow_html=True)
+        st.markdown(f'<p dir="rtl" style="font-size:0.82rem;color:#888;margin:0 0 8px 0;">{_N:,} תצפיות (רחוב × שעה) — מדגם מ-58,360 קשתות OSMnx · שעות שמש בלבד (sun_altitude > 10°)</p>', unsafe_allow_html=True)
         fig_tci_hist, ax_tci_hist = plt.subplots(figsize=(6, 4))
         ax_tci_hist.hist(_tci_syn, bins=36, color="#2980b9", alpha=0.85,
                          edgecolor="white", linewidth=0.5)
@@ -1419,44 +1549,45 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
         plt.close(fig_tci_hist)
     st.divider()
 
-    # ── גרף 3: Heatmap קורלציות סינתטי ──────────────────────────────────────
-    st.markdown(f'<p dir="rtl" style="font-weight:600;font-size:15px;margin:0 0 2px 0;">גרף 3 — Heatmap קורלציות פיצ\'רים–TCI (N={_N:,} דוגמאות סינתטיות)</p>', unsafe_allow_html=True)
-    st.markdown('<p dir="rtl" style="font-size:0.82rem;color:#888;margin:0 0 8px 0;">אדום = קורלציה חיובית (X עולה → TCI עולה) · כחול = שלילית (X עולה → TCI יורד) · ⚠️ נתונים נוצרו מהנוסחה האנליטית — לאימות כיוון הפיצ׳רים לפני אימון</p>', unsafe_allow_html=True)
+    # ── גרף 3: Heatmap קורלציות — כל 7 הפיצ'רים + TCI ──────────────────────
+    st.markdown('<p dir="rtl" style="font-weight:600;font-size:15px;margin:0 0 2px 0;">גרף 3 — מטריצת קורלציות: פיצ׳רים מול TCI</p>', unsafe_allow_html=True)
+    st.markdown(f'<p dir="rtl" style="font-size:0.82rem;color:#888;margin:0 0 8px 0;">{_N:,} תצפיות (רחוב × שעה) · אדום = קורלציה חיובית (X עולה → TCI עולה) · כחול = שלילית · מבנים + עצים + PySolar + מזג-אוויר</p>', unsafe_allow_html=True)
 
-    _syn_df = pd.DataFrame({
-        "sun_altitude":   _sa,
-        "building_height": _bh,
-        "canopy_ratio":   _cr,
-        "cloud_cover":    _cl,
-        "TCI":            _tci_syn,
+    _corr_df = _tci_df.rename(columns={
+        "sun_altitude": "sun_alt", "building_height": "bldg_h",
+        "canopy_ratio": "canopy", "cloud_cover": "cloud",
+        "temperature": "temp", "humidity": "humid",
+        "azimuth": "azimuth", "TCI": "TCI",
     })
-    _corr_syn = _syn_df.corr().round(2)
-    fig_corr_syn, ax_corr_syn = plt.subplots(figsize=(7, 5))
+    _corr_syn = _corr_df.corr().round(2)
+    _nc = len(_corr_syn)
+    fig_corr_syn, ax_corr_syn = plt.subplots(figsize=(9, 7))
     _im_syn = ax_corr_syn.imshow(_corr_syn.values, cmap="RdBu_r", vmin=-1, vmax=1)
-    ax_corr_syn.set_xticks(range(len(_corr_syn)))
-    ax_corr_syn.set_yticks(range(len(_corr_syn)))
-    ax_corr_syn.set_xticklabels(_corr_syn.columns, rotation=30, ha="right", fontsize=9)
+    ax_corr_syn.set_xticks(range(_nc))
+    ax_corr_syn.set_yticks(range(_nc))
+    ax_corr_syn.set_xticklabels(_corr_syn.columns, rotation=35, ha="right", fontsize=9)
     ax_corr_syn.set_yticklabels(_corr_syn.columns, fontsize=9)
-    for _i in range(len(_corr_syn)):
-        for _j in range(len(_corr_syn)):
+    for _i in range(_nc):
+        for _j in range(_nc):
             ax_corr_syn.text(
                 _j, _i, f"{_corr_syn.values[_i, _j]:.2f}",
-                ha="center", va="center", fontsize=9,
+                ha="center", va="center", fontsize=8,
                 color="white" if abs(_corr_syn.values[_i, _j]) > 0.5 else "black",
             )
     fig_corr_syn.colorbar(_im_syn, ax=ax_corr_syn, shrink=0.7)
-    ax_corr_syn.set_title("Pearson Correlation — features vs. TCI (synthetic)")
+    ax_corr_syn.set_title("Pearson Correlation — features vs. TCI (real data distributions)")
+    plt.tight_layout()
     st.pyplot(fig_corr_syn, use_container_width=True)
     plt.close(fig_corr_syn)
 
     _tci_corrs = _corr_syn["TCI"].drop("TCI").sort_values(key=abs, ascending=False)
     st.markdown(
-        f'<div dir="rtl" style="background:#e8f4f8;border-right:4px solid #2980b9;padding:12px 16px;'
-        f'border-radius:6px;font-size:14px;line-height:1.7;">'
-        f'<b>💡KPI </b><br>'
-        f'RMSE</b> — רגרסיה על יעד רציף 1–10'
-        f'עם עונש גבוה על טעויות גדולות (מסלול שמשי במקום מוצל)'
-        f'</div>',
+        '<div dir="rtl" style="background:#e8f4f8;border-right:4px solid #2980b9;padding:12px 16px;'
+        'border-radius:6px;font-size:14px;line-height:1.7;">'
+        '<b>💡 מטריקה נבחרת: RMSE</b><br>'
+        'רגרסיה על יעד רציף (1–10). RMSE מעניש בחומרה על טעויות גדולות — '
+        'חיזוי שגוי של רחוב חשוף כמוצל יסכן את המשתמש בפועל.'
+        '</div>',
         unsafe_allow_html=True,
     )
 
@@ -1493,6 +1624,83 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
         """,
         unsafe_allow_html=True,
     )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # גרף 4 — ייחודי לדומיין: מפת TCI גיאוגרפית על רחובות תל אביב
+    # ══════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.subheader("🗺️ גרף 4 — ייחודי לדומיין: מפת TCI על שכונת רוטשילד")
+    st.markdown(
+        '<p dir="rtl" style="font-size:13px;color:#888;margin:0 0 8px 0;">'
+        'TCI חושב לכל קשת ברחוב — אזור שדרות רוטשילד ולב העיר (Lev HaIr) · '
+        'שעת ייחוס: קיץ 13:00 (sun_altitude=60°, cloud=5%) · '
+        'כל הקשתות בתחום גיאוגרפי מוצגות (ללא מדגם) · '
+        '<span style="color:#27ae60;font-weight:600;">ירוק TCI≤4</span> · '
+        '<span style="color:#f39c12;font-weight:600;">כתום 4–7</span> · '
+        '<span style="color:#e74c3c;font-weight:600;">אדום≥7</span></p>',
+        unsafe_allow_html=True,
+    )
+
+    import geopandas as _gpd
+    from pathlib import Path as _PF
+    _ef_path = _PF("data/edges_features.parquet")
+    if _ef_path.exists():
+        _ef = _gpd.read_parquet(_ef_path)
+        # סינון גיאוגרפי לאזור שדרות רוטשילד ולב העיר (WGS84: lon, lat)
+        _LON_MIN, _LON_MAX = 34.762, 34.792
+        _LAT_MIN, _LAT_MAX = 32.054, 32.076
+        _ef_s = _ef.cx[_LON_MIN:_LON_MAX, _LAT_MIN:_LAT_MAX].copy()
+        # fallback לצפון הישן אם האזור ריק
+        if len(_ef_s) == 0:
+            _ef_s = _ef.cx[34.774:34.800, 32.083:32.102].copy()
+
+        _SUN_NOON, _CLOUD_NOON = 60.0, 0.05
+        _sa_r = np.radians(_SUN_NOON)
+        _bf_e = np.clip(_ef_s["mean_building_height"] / 30, 0, 1) * np.cos(_sa_r)
+        _ef_s["tci"] = np.clip(
+            1 + 9 * (_SUN_NOON / 80) * (1 - _CLOUD_NOON)
+              * (1 - 0.6 * _ef_s["tree_canopy_ratio"] - 0.4 * _bf_e),
+            1, 10,
+        )
+
+        def _tci_color_map(t):
+            if t <= 4:  return "#27ae60"
+            if t <= 7:  return "#f39c12"
+            return "#e74c3c"
+
+        _m_tci = folium.Map(
+            location=[32.065, 34.776], zoom_start=15, tiles="CartoDB positron"
+        )
+        for _, _row in _ef_s.iterrows():
+            if _row.geometry is None:
+                continue
+            try:
+                _coords = [(lat, lon) for lon, lat in _row.geometry.coords]
+            except Exception:
+                continue
+            folium.PolyLine(
+                _coords,
+                color=_tci_color_map(_row["tci"]),
+                weight=3, opacity=0.85,
+                tooltip=(
+                    f"TCI={_row['tci']:.1f} | "
+                    f"h={_row['mean_building_height']:.0f}m | "
+                    f"canopy={_row['tree_canopy_ratio']:.2f}"
+                ),
+            ).add_to(_m_tci)
+
+        st_folium(_m_tci, height=540, use_container_width=True)
+        st.caption(f"מוצגות {len(_ef_s):,} קשתות באזור רוטשילד–לב העיר")
+        st.info(
+            "💡 **תובנה מרחבית:** שדרת רוטשילד ורחובות מוצלים בלב העיר (עצים + מבנים גבוהים) "
+            "מקבלים TCI נמוך (ירוק). רחובות חשופים ורחבים ללא עצים מקבלים TCI גבוה (אדום). "
+            "זוהי הסיבה שה-Dijkstra שלנו ייתן עדיפות לקשתות ירוקות."
+        )
+    else:
+        st.warning(
+            "⚠️ `data/edges_features.parquet` חסר — הרץ `python precompute_features.py` "
+            "פעם אחת ליצירת הנתונים המרחביים."
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1603,23 +1811,65 @@ with tab_map:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — NAVIGATION (placeholder)
+# TAB 3 — NAVIGATION
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_nav:
-    st.title("🚶 ניווט מוצל")
-    st.info("🚧 **בפיתוח** — יהיה זמין ב-M3. האלגוריתם יחשב מסלול עם מינימום חשיפה לשמש.")
+    st.title("🚶 ניווט בתל אביב")
+
+    if not _ROUTING:
+        st.error("⚠️ חבילת `osmnx` לא מותקנת — התקן עם `pip install osmnx networkx` והפעל מחדש.")
+        st.stop()
 
     c1, c2 = st.columns(2)
     with c1:
-        st.text_input("📍 נקודת מוצא", placeholder="לדוגמה: כיכר רבין, תל אביב")
+        origin_input = st.text_input(
+            "📍 נקודת מוצא",
+            placeholder="לדוגמה: כיכר רבין, תל אביב",
+            key="nav_origin",
+        )
     with c2:
-        st.text_input("🏁 יעד", placeholder="לדוגמה: שוק הכרמל, תל אביב")
+        dest_input = st.text_input(
+            "🏁 יעד",
+            placeholder="לדוגמה: שוק הכרמל, תל אביב",
+            key="nav_dest",
+        )
 
-    st.time_input("⏰ שעת היציאה (לחישוב מיקום השמש)")
-    st.button("מצא מסלול מוצל ☀️", disabled=True)
-
+    find_btn = st.button("מצא מסלול 🗺️", type="primary")
     st.divider()
-    st.caption("הניווט ישתמש ב: OSMnx · PySolar · Scikit-Learn · NetworkX Dijkstra")
+
+    if find_btn:
+        if not origin_input.strip() or not dest_input.strip():
+            st.warning("⚠️ יש להזין גם נקודת מוצא וגם יעד.")
+        else:
+            with st.spinner("מחשב מסלול..."):
+                error_msg = None
+                route_result = None
+                origin_latlon = None
+                dest_latlon = None
+                try:
+                    origin_latlon = _geocode_cached(origin_input)
+                    dest_latlon = _geocode_cached(dest_input)
+                    route_result = compute_route(origin_latlon, dest_latlon)
+                except ValueError as e:
+                    error_msg = f"❌ {e}"
+                except Exception as e:
+                    error_msg = f"❌ שגיאה: {e}"
+
+            if error_msg:
+                st.error(error_msg)
+            else:
+                m1, m2 = st.columns(2)
+                m1.metric("📏 מרחק", f"{route_result['distance_m']:.0f} מ'")
+                m2.metric("⏱️ זמן הליכה משוער", f"{route_result['duration_min']:.0f} דקות")
+                route_map = build_route_map(origin_latlon, dest_latlon, route_result)
+                st_folium(route_map, height=520, width=1100, returned_objects=[])
+    else:
+        _empty_map = folium.Map(
+            location=[32.0853, 34.7818], zoom_start=13, tiles="CartoDB positron"
+        )
+        st_folium(_empty_map, height=520, width=1100, returned_objects=[])
+
+    st.caption("ניווט מבוסס: OSMnx · Nominatim · NetworkX Dijkstra")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

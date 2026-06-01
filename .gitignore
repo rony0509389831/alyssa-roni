@@ -1,6 +1,7 @@
 # ==========================================
 # קבצי נתונים ו-GIS (Data & Geospatial Files)
 # ==========================================
+data/tel_aviv_walk.graphml
 tel_aviv_buildings.geojson
 *.geojson
 *.shp
