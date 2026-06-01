@@ -1599,21 +1599,16 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
 📋 ניתוח וסיכום — חלק ה'</div>
 
 <b>ניתוח התפלגות וערכי מרכז:</b><br>
-נטייה ימינה (Right-skewed) בהתפלגות ה-TCI מאששת את עומס החום המובנה במרחב העירוני של תל אביב ומדגישה
-את נחיצותה של מערכת ניווט מותאמת אקלים. הפיזור הרחב על פני כל הטווח (1–10) מאמת כי הדאטהסט
+ הפיזור הרחב על פני כל הטווח (1–10) מאמת כי הדאטהסט
 מייצג שונות גבוהה ומגוון רחב של תתי-מיקרו-אקלים עירוניים ברמת הרחוב.
 <br><br>
 
 <b>תובנות הנדסיות מניתוח הקורלציות (Heatmap):</b><br>
 <b>1. השפעת זווית השמש (sun_altitude):</b> מתאם חיובי גבוה מאוד בין גובה השמש ל-TCI — זווית קרינה
-אנכית היא הגורם הדומיננטי ביותר בהיווצרות עומס תרמי עירוני.<br>
-<b>2. אפקט החסימה המבני (building_height):</b> קורלציה שלילית מובהקת מול משתנה היעד.
+אנכית ה6יא הגורם הדומיננטי ביותר בהיווצרות עומס תרמי עירוני.<br>
+<b>2. אפקט החסימה המבני (building_height):</b> קורלציה שלילית מול משתנה היעד.
 ההשפעה גדלה ככל שזווית השמש נמוכה מ-20°, אז מבנים בני 3 קומות ומעלה מצליחים להטיל צל ארוך
 האפקטיבי לאורך המדרכה הנגדית — בדיוק כפי שמנוסח ב-Building_Factor = clip(h/30,0,1)×cos(alt_rad).<br>
-<b>3. אפקט הצינון הבוטני (canopy_ratio):</b> המתאם השלילי החזק ביותר מבין משתני התשתית הסטטיים.
-חופת עצים עשירה מורידה את ה-TCI באופן עקבי בכל שעות היום, ללא תלות בזווית השמש,
-הודות לשילוב בין חסימת קרינה ישירה לצינון אקטיבי (Evapotranspiration) — w₁=0.6.
-<br><br>
 
 <b>בחירת KPI ומטריקה למודל:</b><br>
 הוחלט לעשות שימוש במטריקת <b>RMSE</b> (Root Mean Squared Error).
@@ -1691,11 +1686,6 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
 
         st_folium(_m_tci, height=540, use_container_width=True)
         st.caption(f"מוצגות {len(_ef_s):,} קשתות באזור רוטשילד–לב העיר")
-        st.info(
-            "💡 **תובנה מרחבית:** שדרת רוטשילד ורחובות מוצלים בלב העיר (עצים + מבנים גבוהים) "
-            "מקבלים TCI נמוך (ירוק). רחובות חשופים ורחבים ללא עצים מקבלים TCI גבוה (אדום). "
-            "זוהי הסיבה שה-Dijkstra שלנו ייתן עדיפות לקשתות ירוקות."
-        )
     else:
         st.warning(
             "⚠️ `data/edges_features.parquet` חסר — הרץ `python precompute_features.py` "
@@ -1877,27 +1867,224 @@ with tab_nav:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_about:
     st.title("ℹ️ אודות SHADY")
-    st.markdown("""
-**SHADY** מוצאת מסלולי הליכה מוצלים בתל אביב על בסיס גבהי מבנים, חופת עצים, מיקום השמש ומזג אוויר בזמן אמת.
 
----
+    st.markdown(
+        """
+        <div style="background:#fdf6e3;border-right:6px solid #d68910;padding:18px 22px;border-radius:8px;margin:10px 0 22px 0;">
+        <div style="font-size:14px;color:#7d6608;font-weight:600;margin-bottom:6px;">SHADY — במשפט אחד</div>
+        <div style="font-size:18px;line-height:1.5;color:#1c1c1c;">
+        <b>SHADY</b> מוצאת מסלולי הליכה מוצלים בתל אביב על בסיס גבהי מבנים, חופת עצים,
+        מיקום השמש ומזג אוויר בזמן אמת — ומשתמשת במודל ML לחיזוי מדד הנוחות התרמית לכל קשת ברחוב.
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-### מקורות נתונים
+    st.divider()
 
-| שכבה | מקור | רשומות |
-|------|------|--------|
-| מבנים | עיריית ת"א (opendata.tel-aviv.gov.il) | 45,783 |
-| חופת עצים | מפ"י (data.gov.il) | 231,234 |
-| רשת רחובות | OSMnx | בקרוב |
-| מזג אוויר | Open-Meteo API | בזמן אמת |
+    # ── מקורות נתונים ──────────────────────────────────────────────────────────
+    st.subheader("🗄️ מקורות נתונים")
 
----
+    st.markdown(
+        """
+        | שכבה | מקור | רשומות |
+        |------|------|--------|
+        | מבנים | עיריית ת"א (opendata.tel-aviv.gov.il) | 45,783 |
+        | חופת עצים | מפ"י (data.gov.il) | 231,234 |
+        | רשת רחובות | OSMnx | גרף מלא |
+        | מזג אוויר | Open-Meteo API | בזמן אמת |
+        """
+    )
 
-### מדד הנוחות התרמית (Thermal Comfort Index)
+    st.divider()
 
-ציון **1–10** לכל קשת בגרף הרחובות:
-- **1** = מוצל / נוח מאוד
-- **10** = חשיפה מלאה לשמש
+    # ══════════════════════════════════════════════════════════════════════════
+    # M3 — KPI SELECTION
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("🎯 M3 — בחירת KPI: איך עוברים מבעיה למספר אחד?")
+    st.caption("בחרנו את מדד ההצלחה של המודל על פי שלושה שלבים מתודיים")
 
-פיצ'רים: גובה מבנה, חופת עצים, זווית שמש, טמפרטורה, לחות, כיסוי עננים.
-    """)
+    # ── תיבת ה-KPI הנבחר ───────────────────────────────────────────────────
+    st.markdown(
+        """
+        <div style="background:#eafaf1;border-right:6px solid #1e8449;padding:20px 24px;border-radius:8px;margin:12px 0 24px 0;">
+        <div style="font-size:13px;color:#196f3d;font-weight:600;margin-bottom:8px;">🏁 המסקנה שלנו — תרגיל מהיר</div>
+        <div style="font-size:18px;line-height:1.7;color:#1c1c1c;">
+        "המודל שלנו הוא <b>מודל רגרסיה</b> ונשתמש ב-<b style="color:#c0392b;">RMSE</b> כי משתנה היעד
+        (<em>TCI</em>) הוא מספר רציף (1–10), והמדד מעניש בחומרה טעויות חיזוי גדולות (בריבוע) —
+        מה שמבטיח בטיחות להולכי הרגל ומונע שליחתם לרחוב לוהט שנחזה בטעות כמוצל."
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── שלושת השלבים ───────────────────────────────────────────────────────
+    st.markdown("#### 🧠 ניתוח לפי 3 שלבים")
+
+    step_col1, step_col2, step_col3 = st.columns(3)
+
+    with step_col3:
+        st.markdown(
+            """
+            <div style="background:#fef9e7;border:2px solid #d4a017;border-radius:10px;padding:18px 16px;min-height:230px;">
+            <div style="font-size:22px;font-weight:700;color:#d4a017;margin-bottom:6px;">01</div>
+            <div style="font-size:16px;font-weight:700;color:#1c1c1c;margin-bottom:10px;">מה הפלט של המודל?</div>
+            <div style="font-size:13px;color:#444;line-height:1.7;">
+            <b>→ רגרסיה.</b><br>
+            הפלט הוא <em>TCI</em> — מספר רציף בסקאלה 1 עד 10.<br>
+            אנחנו רוצות לדעת <em>כמה</em> מוצל הרחוב, לא רק "מוצל / לא מוצל",
+            כדי שהמשקולות על גרף Dijkstra יהיו מדויקות ורציפות.
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with step_col2:
+        st.markdown(
+            """
+            <div style="background:#fef9e7;border:2px solid #d4a017;border-radius:10px;padding:18px 16px;min-height:230px;">
+            <div style="font-size:22px;font-weight:700;color:#d4a017;margin-bottom:6px;">02</div>
+            <div style="font-size:16px;font-weight:700;color:#1c1c1c;margin-bottom:10px;">מה עלות של טעות?</div>
+            <div style="font-size:13px;color:#444;line-height:1.7;">
+            <b>→ טעות גדולה = סיכון בטיחותי.</b><br>
+            אם המודל יחזה TCI=4 (נוח) לרחוב שהוא בפועל 9 (לוהט וחשוף),
+            אנחנו מסכנות אוכלוסיות פגיעות כמו קשישים ולבקנים.<br>
+            <b>RMSE</b> מעלה טעויות בריבוע — מה שנותן עונש ענק לטעויות גדולות ומכריח את המודל להיות שמרן.
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with step_col1:
+        st.markdown(
+            """
+            <div style="background:#fef9e7;border:2px solid #d4a017;border-radius:10px;padding:18px 16px;min-height:230px;">
+            <div style="font-size:22px;font-weight:700;color:#d4a017;margin-bottom:6px;">03</div>
+            <div style="font-size:16px;font-weight:700;color:#1c1c1c;margin-bottom:10px;">איך נראה משתנה היעד?</div>
+            <div style="font-size:13px;color:#444;line-height:1.7;">
+            <b>→ מתפרש על פני כל הטווח</b><br>
+            <b>RMSE</b> נותן אינדיקציה אמיתית על איכות החיזוי בכל הטווח —
+            בניגוד למדדי סיווג שהיו מאבדות את הרזולוציה הרציפה.
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
+
+    # ── טבלת מדדים ──────────────────────────────────────────────────────────
+    with st.expander("📊 מבט מהיר — טבלת המדדים הנפוצים"):
+        st.markdown(
+            """
+            | סוג | מדד | מתי משתמשים |
+            |-----|-----|-------------|
+            | רגרסיה | **RMSE** ✅ | טעויות באחידות היעד; מעניש טעויות גדולות (בריבוע) |
+            | רגרסיה | MAE | עמיד לחריגים, פשוט להסביר למשתמש |
+            | סיווג | Accuracy | רק כשהמחלקות מאוזנות (50/50) |
+            | סיווג | F1 | מחלקות לא מאוזנות — מאזן Precision ו-Recall |
+            | סיווג | Recall | כש"החמצה" מסוכנת (רפואה, בטיחות) |
+            """
+        )
+        st.info("💡 אנחנו בשורת **רגרסיה + RMSE** — כי TCI הוא מספר רציף ולא קטגוריה.")
+
+    st.divider()
+
+    # ── מפת דרכים ל-M3 ──────────────────────────────────────────────────────
+    st.subheader("🗺️ מפת הדרכים שלנו ל-M3")
+
+    rd_col1, rd_col2 = st.columns(2)
+
+    with rd_col2:
+        st.markdown("#### 1️⃣ Feature Engineering")
+        st.markdown(
+            """
+            - **Log-transform** ל-`canopy_area_m2` — עקב Skewness קיצוני שאנחנו זיהינו ב-EDA
+            - חילוץ **`bearing`** (כיוון הרחוב במעלות) מ-OSMnx —
+              המודל יצליב אותו עם `sun_azimuth` לחישוב מדויק של זווית הטלת הצל
+            """
+        )
+
+        st.markdown("#### 2️⃣ חלוקת הדאטה")
+        st.markdown(
+            """
+            - **Spatial Split** (לפי מקטעי רחוב) — לא ערבוב שעות שונות של אותו רחוב
+              בין Train ל-Test, כי זה יגרום ל-Data Leakage
+            - חלוקה: **Train 70% / Val 15% / Test 15%**
+            """
+        )
+
+    with rd_col1:
+        st.markdown("#### 3️⃣ Baseline")
+        st.markdown(
+            """
+            - נריץ **LinearRegression** פשוטה כ-Baseline
+            - נשווה ל-RMSE של חיזוי הממוצע (Naive Baseline) —
+              כל מודל חייב לנצח לפחות את זה
+            """
+        )
+
+        st.markdown("#### 4️⃣ המודל המומלץ")
+        st.markdown(
+            """
+            - **RandomForestRegressor** — קל למימוש, יציב, אידיאלי לסיבוב הראשון
+            - מטרה מתקדמת: **XGBoost / LightGBM** — המלכים של דאטה טבלאי, מטפלים
+              אוטומטית באינטראקציות לא-ליניאריות (azimuth × bearing × building height)
+            """
+        )
+
+    st.markdown(
+        """
+        <div style="background:#eafaf1;border-right:6px solid #1e8449;padding:16px 20px;border-radius:8px;margin:14px 0 0 0;">
+        <div style="font-size:13px;color:#196f3d;font-weight:600;margin-bottom:6px;">⚙️ למה לא מודל ליניארי בלבד?</div>
+        <div style="font-size:14px;line-height:1.7;color:#1c1c1c;">
+        הנתונים הטבלאיים-גיאוגרפיים שלנו כוללים אינטראקציות לא-ליניאריות קיצוניות —
+        למשל: "אם השעה 13:00 <em>וגם</em> הרחוב פונה לצפון <em>וגם</em> יש בניין גבוה — אז יש צל".
+        מודלים ליניאריים לא יזהו את הצמדים האלה. מודלים מבוססי עצים (Random Forest / XGBoost) כן.
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # ── מדד הנוחות התרמית ──────────────────────────────────────────────────
+    st.subheader("🌡️ מדד הנוחות התרמית (TCI)")
+
+    tci_col1, tci_col2 = st.columns([1, 2])
+    with tci_col1:
+        st.markdown(
+            """
+            <div style="background:#fdecea;border-right:6px solid #c0392b;padding:16px 18px;border-radius:8px;">
+            <div style="font-size:13px;color:#7b241c;font-weight:600;margin-bottom:8px;">ציון 1–10 לכל קשת ברחוב</div>
+            <div style="font-size:13px;color:#444;line-height:1.8;">
+            <b style="color:#1e8449;">1</b> = מוצל / נוח מאוד<br>
+            <b style="color:#d35400;">5</b> = חשיפה חלקית<br>
+            <b style="color:#c0392b;">10</b> = חשיפה מלאה לשמש
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with tci_col2:
+        st.markdown(
+            """
+            **פיצ'רים במודל:**
+
+            | פיצ'ר | תיאור |
+            |-------|-------|
+            | `azimuth` | כיוון הרחוב במעלות |
+            | `mean_building_height` | ממוצע גבהי המבנים הסמוכים |
+            | `tree_canopy_ratio` | יחס חופת עצים לאורך הקשת |
+            | `sun_altitude` | גובה השמש בשמיים (PySolar) |
+            | `sun_azimuth` | אזימוט השמש (PySolar) |
+            | `temperature` | טמפרטורה (°C) |
+            | `humidity` | לחות יחסית (%) |
+            | `cloud_cover` | כיסוי עננים (%) |
+            """
+        )
