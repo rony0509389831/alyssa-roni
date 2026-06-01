@@ -1,0 +1,14 @@
+[
+  {"month": 1,  "month_name": "ינואר",   "temperature": 13.0, "humidity": 73, "cloud_cover": 50},
+  {"month": 2,  "month_name": "פברואר",  "temperature": 13.5, "humidity": 72, "cloud_cover": 48},
+  {"month": 3,  "month_name": "מרץ",     "temperature": 16.0, "humidity": 71, "cloud_cover": 40},
+  {"month": 4,  "month_name": "אפריל",   "temperature": 19.5, "humidity": 69, "cloud_cover": 25},
+  {"month": 5,  "month_name": "מאי",     "temperature": 22.5, "humidity": 68, "cloud_cover": 15},
+  {"month": 6,  "month_name": "יוני",    "temperature": 25.5, "humidity": 70, "cloud_cover":  8},
+  {"month": 7,  "month_name": "יולי",    "temperature": 27.5, "humidity": 72, "cloud_cover":  5},
+  {"month": 8,  "month_name": "אוגוסט",  "temperature": 28.0, "humidity": 73, "cloud_cover":  5},
+  {"month": 9,  "month_name": "ספטמבר",  "temperature": 26.5, "humidity": 70, "cloud_cover": 10},
+  {"month": 10, "month_name": "אוקטובר", "temperature": 23.5, "humidity": 68, "cloud_cover": 20},
+  {"month": 11, "month_name": "נובמבר",  "temperature": 18.5, "humidity": 70, "cloud_cover": 35},
+  {"month": 12, "month_name": "דצמבר",   "temperature": 14.5, "humidity": 73, "cloud_cover": 45}
+]
