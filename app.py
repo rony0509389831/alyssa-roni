@@ -1223,10 +1223,7 @@ with tab_eda:
         st.pyplot(fig_h, use_container_width=True)
         plt.close(fig_h)
         st.info(
-            f'💡 **תובנה:** עמודת המטרה היא **שטח החופה** (`canopy_area_m2`) ולא ההיקף — '
-            f'השטח מודד ישירות את כמות ההצללה (השטח שחוסם את השמש), בעוד שההיקף מודד רק את '
-            f'אורך הקצה; שתי צורות עם היקף זהה יכולות להצל שטח שונה לחלוטין (וממילא השניים '
-            f'מקורלים ב-r=0.96, כך שאיבדנו מעט מאוד מידע בבחירת השטח). '
+            f'💡 **תובנה:** עמודת המטרה היא **שטח החופה** (`canopy_area_m2`) ולא ההיקף. '
             f'ה**הבדל הגדול בין החציון ({trees_full["canopy_area_m2"].median():.1f} m²) '
             f'לממוצע ({trees_full["canopy_area_m2"].mean():.1f} m²)** מעיד על ערכי קיצון '
             f'וטווח רחב מאוד — מערכים קטנים מ-1 ועד ~{trees_full["canopy_area_m2"].max():,.0f} m². '
@@ -1313,7 +1310,7 @@ with tab_eda:
 
     with sun_col2:
         st.markdown("**טבלה: אורך צל לאורך היום (קיץ)**")
-        _H_REF = 20.0  # גובה מבנה ייחוס (מ')
+        _H_REF = 10.0  # גובה מבנה ייחוס (מ')
         _sun_rows_html = ""
         for _sh, _sa2 in zip(_hours_sun, _alts_s):
             if _sa2 > 0:
@@ -1334,13 +1331,13 @@ with tab_eda:
   <thead><tr style="background:#f4f6f8;position:sticky;top:0;">
     <th style="padding:9px 14px;border-bottom:2px solid #ccc;text-align:center;font-size:13px;">שעה (UTC)</th>
     <th style="padding:9px 14px;border-bottom:2px solid #ccc;text-align:center;font-size:13px;">altitude (°)</th>
-    <th style="padding:9px 14px;border-bottom:2px solid #ccc;text-align:center;font-size:13px;">אורך צל (h=20מ')</th>
+    <th style="padding:9px 14px;border-bottom:2px solid #ccc;text-align:center;font-size:13px;">אורך צל (h=10מ')</th>
   </tr></thead>
   <tbody>{_sun_rows_html}</tbody>
 </table></div>""",
             unsafe_allow_html=True,
         )
-        st.caption("אורך הצל מחושב לפי L = h / tan(altitude) עבור מבנה בגובה 20 מ' (חתוך ל-100 מ').")
+        st.caption("אורך הצל מחושב לפי L = h / tan(altitude) עבור מבנה בגובה 10 מ' (חתוך ל-50 מ').")
 
     st.info(
         "💡 **תובנה:** בשעות שבהן המודל שלנו \"הכי נחוץ\" (שיא הקיץ, שיא החום ביום), "
