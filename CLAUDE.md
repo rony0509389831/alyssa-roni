@@ -27,17 +27,20 @@ pysolar, scikit-learn, networkx, pytest
 ## ML Model
 
 - **משימה:** רגרסיה — חיזוי Thermal Comfort Index (ציון 1–10) לכל קשת בגרף הרחובות.
-- **פיצ'רים:** `azimuth`, `mean_building_height`, `tree_canopy_ratio`, `sun_altitude`, `sun_azimuth`, `temperature`, `humidity`, `cloud_cover`
+- **פיצ'רים (7, מקור אמת = `build_tci_df` ב-`app.py`/`src/data.py`):** `sun_altitude`, `building_height`, `canopy_ratio`, `cloud_cover`, `temperature`, `humidity`, `azimuth`.
+  - בטבלת האימון השמות הם `building_height`/`canopy_ratio`; בקובץ `edges_features.parquet` הם `mean_building_height`/`tree_canopy_ratio`. אין `sun_azimuth`.
+  - `temperature`/`humidity`/`azimuth` אינם נכנסים לנוסחת ה-TCI האנליטית (decoys) — המודל אמור ללמוד להוריד להם משקל.
 - **חישוב Sun Position:** PySolar (משולב ישירות ב-`app.py` ו-`notebooks/01_eda.ipynb`)
 - **נוסחה analytic נוכחית (MVP):**
   ```
   TCI = 1 + 9 * (sun_altitude/80) * (1 - cloud_cover/100) * (1 - 0.6*canopy_ratio - 0.4*building_factor)
   ```
   מחושבת ב-`build_tci_df()` ב-`app.py`; טווח מוצמד ל-[1, 10].
-- **`src/model.py`** קיים — ML training & inference (טרם מחובר לניווט בפועל).
-- **Loss:** MSE | **מטריקה:** RMSE
-- **חלוקה:** Train 70% / Validation 15% / Test 15% (ללא פיצול לפי רחוב)
-- **Baseline:** Linear Regression (למודל) + Dijkstra גיאומטרי (לניווט)
+- **`src/data.py`** — `build_tci_df()`: בונה טבלת אימון (7 פיצ'רים + TCI) מ-`edges_features.parquet`, ללא Streamlit (גרסה נקייה של הפונקציה שב-`app.py`).
+- **`src/model.py`** — מממש M3 שלבים 3+5: `load_train_test()` (פיצול), `evaluate()` (RMSE+R²), `run_baselines()` (DummyRegressor). מודלים אמיתיים (שלב 6) טרם נכתבו; טרם מחובר לניווט. הרצה: `python -m src.model`.
+- **Loss:** MSE | **מטריקה (KPI):** RMSE (ראשי) + R² (בונוס)
+- **חלוקה:** כרגע (M3) 80/20 train/test, `random_state=42`, פיצול לפי שורה (לא לפי רחוב). תכנון עתידי: Train 70% / Val 15% / Test 15%.
+- **Baseline (שלב 5):** `DummyRegressor` — mean (רצפה ראשית, RMSE≈1.77 על test) + median (רצפה משנית; התפלגות TCI מוטה ימינה, skew≈0.78). Linear Regression / Random Forest הם **מודלים מועמדים** לשלב 6, לא baseline. ניווט: Dijkstra גיאומטרי.
 - **ספריה:** Scikit-Learn
 
 ---
@@ -93,11 +96,11 @@ alyssa-roni/
 │   ├── climate_fallback.json       # ממוצעים חודשיים (T, humidity, cloud_cover)
 │   └── screenshots/                # PNG לממשק
 ├── src/
-│   ├── data.py             # load_and_clean() → buildings_clean.csv
-│   ├── clean_buildings.py  # כפילות של data.py
+│   ├── data.py             # build_tci_df() — טבלת אימון TCI מ-edges_features.parquet (ללא Streamlit)
+│   ├── clean_buildings.py  # ניקוי שכבת המבנים
 │   ├── eda_buildings.py    # EDA וגרפים לשכבת המבנים
 │   ├── spatial.py          # compute_edge_features() — Spatial Join, buffer=5m
-│   ├── model.py            # ML model training & inference (scikit-learn)
+│   ├── model.py            # M3: load_train_test (פיצול) + DummyRegressor baseline (RMSE/R²)
 │   ├── routing.py          # load_graph(), geocode_address(), compute_route() (OSRM)
 │   └── weather.py          # get_current_weather() — Open-Meteo + fallback
 ├── notebooks/
@@ -105,6 +108,7 @@ alyssa-roni/
 ├── outputs_M2/             # פלטים ממשימה 2
 ├── tests/                  # בדיקות
 ├── requirements.txt
+├── WORKLOG.md              # יומן עבודה לפי מושבים (תאריך, מה נעשה, בעיות ופתרונן)
 └── CLAUDE.md
 ```
 
@@ -130,3 +134,7 @@ alyssa-roni/
 - רשת הרחובות נשמרת ב-cache ב-`data/tel_aviv_walk.graphml` כדי להימנע מהורדה חוזרת
 - ניווט נוכחי: OSRM API (demo server, foot routing) — Dijkstra עם TCI weights הוא שלב עתידי
 - חישובי צל מבוססים על גיאומטריה 2D (לא סימולציית 3D מלאה)
+- לוגיקת בניית טבלת האימון (`build_tci_df`) הוצאה ל-`src/data.py` כי ייבוא מ-`app.py` מריץ את כל אפליקציית Streamlit; קיימת כרגע כפילות מכוונת בין השניים
+- ה-baseline של M3 הוא `DummyRegressor(strategy="mean")` (לא Linear Regression) — הממוצע ממזער RMSE בהגדרה, ולכן הוא הרצפה ההוגנת תחת ה-KPI; median נבדק כרצפה משנית בגלל הטיה ימנית
+- היעד הסינתטי: ה-TCI מחושב מהנוסחה האנליטית, אז מודל ה-ML בשלב 6 בעצם לומד לשחזר אותה — צעד ביניים מתוכנן עד שיהיו תוויות אמת מדודות
+- נוסחת ה-TCI מתעלמת מכיוון השמש (תופסת רק אורך צל דרך `cos(sun_altitude)`). שיפור עתידי: אינטראקציה זווית-יחסית שמש↔רחוב (`|sun_azimuth − street_azimuth|` × גובה מבנה) — רק אז `sun_azimuth` הופך פיצ'ר משמעותי. כרגע decoy, הושמט בצדק
