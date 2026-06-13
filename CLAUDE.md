@@ -37,7 +37,7 @@ pysolar, scikit-learn, networkx, pytest
   ```
   מחושבת ב-`build_tci_df()` ב-`app.py`; טווח מוצמד ל-[1, 10].
 - **`src/data.py`** — `build_tci_df()`: בונה טבלת אימון (7 פיצ'רים + TCI) מ-`edges_features.parquet`, ללא Streamlit (גרסה נקייה של הפונקציה שב-`app.py`).
-- **`src/model.py`** — מממש M3 שלבים 3+5: `load_train_test()` (פיצול), `evaluate()` (RMSE+R²), `run_baselines()` (DummyRegressor). מודלים אמיתיים (שלב 6) טרם נכתבו; טרם מחובר לניווט. הרצה: `python -m src.model`.
+- **`src/model.py`** — מממש M3 שלבים 3–8: `load_train_test`, `evaluate` (RMSE+R²), `run_baselines` (DummyRegressor), `build_models` (3 Pipelines), `train_and_evaluate`, `select_winner`, `save_model`. מנצח: **RandomForest (RMSE≈0.12 על test)** → נשמר ל-`data/tci_model.joblib` ונטען ב-app.py (גרף 4, מפת ML פר-edge). הרצה: `python -m src.model`.
 - **Loss:** MSE | **מטריקה (KPI):** RMSE (ראשי) + R² (בונוס)
 - **חלוקה:** כרגע (M3) 80/20 train/test, `random_state=42`, פיצול לפי שורה (לא לפי רחוב). תכנון עתידי: Train 70% / Val 15% / Test 15%.
 - **Baseline (שלב 5):** `DummyRegressor` — mean (רצפה ראשית, RMSE≈1.77 על test) + median (רצפה משנית; התפלגות TCI מוטה ימינה, skew≈0.78). Linear Regression / Random Forest הם **מודלים מועמדים** לשלב 6, לא baseline. ניווט: Dijkstra גיאומטרי.
@@ -92,6 +92,8 @@ alyssa-roni/
 │   ├── buildings_clean.csv         # 45,783 מבנים לאחר ניקוי + imputation
 │   ├── national_canopy_clean.parquet # 231,234 עצים
 │   ├── edges_features.parquet      # פיצ'רים לקשתות (mean_building_height, tree_canopy_ratio)
+│   ├── tci_model.joblib            # מודל TCI מאומן (RandomForest) — נטען ב-app.py
+│   ├── model_results.json          # תוצאות השוואת המודלים — מוצג בטאב אודות בסטרימליט
 │   ├── tel_aviv_walk.graphml       # רשת רחובות (cache מ-OSMnx)
 │   ├── climate_fallback.json       # ממוצעים חודשיים (T, humidity, cloud_cover)
 │   └── screenshots/                # PNG לממשק
@@ -100,7 +102,7 @@ alyssa-roni/
 │   ├── clean_buildings.py  # ניקוי שכבת המבנים
 │   ├── eda_buildings.py    # EDA וגרפים לשכבת המבנים
 │   ├── spatial.py          # compute_edge_features() — Spatial Join, buffer=5m
-│   ├── model.py            # M3: load_train_test (פיצול) + DummyRegressor baseline (RMSE/R²)
+│   ├── model.py            # M3 שלבים 3-8: train/test, baseline, 3 מודלים, בחירת מנצח, שמירה (joblib)
 │   ├── routing.py          # load_graph(), geocode_address(), compute_route() (OSRM)
 │   └── weather.py          # get_current_weather() — Open-Meteo + fallback
 ├── notebooks/

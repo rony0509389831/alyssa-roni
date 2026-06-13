@@ -1,0 +1,62 @@
+{
+  "rows": {
+    "train": 4000,
+    "test": 1000
+  },
+  "baseline_mean_rmse": 1.772,
+  "table": [
+    {
+      "model": "baseline (mean)",
+      "rmse": 1.772,
+      "r2": -0.0018
+    },
+    {
+      "model": "linear",
+      "rmse": 0.4,
+      "r2": 0.9489
+    },
+    {
+      "model": "tree",
+      "rmse": 0.21,
+      "r2": 0.9859
+    },
+    {
+      "model": "forest",
+      "rmse": 0.12,
+      "r2": 0.9954
+    }
+  ],
+  "winner": "forest",
+  "winner_rmse": 0.12,
+  "winner_r2": 0.9954,
+  "importances": [
+    [
+      "sun_altitude",
+      0.752
+    ],
+    [
+      "cloud_cover",
+      0.101
+    ],
+    [
+      "temperature",
+      0.079
+    ],
+    [
+      "canopy_ratio",
+      0.047
+    ],
+    [
+      "building_height",
+      0.013
+    ],
+    [
+      "humidity",
+      0.007
+    ],
+    [
+      "azimuth",
+      0.001
+    ]
+  ]
+}

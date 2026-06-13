@@ -72,16 +72,18 @@
 
 **הגדרת הבעיה:** מודל רגרסיה לחיזוי **מדד עומס החום המורגש (Thermal Comfort Index)** של מקטע רחוב.
 
-**קלט** $X$ — וקטור מאפיינים מרחביים ואקלימיים לכל מקטע רחוב:
+**קלט** $X$ — וקטור של **7 מאפיינים** מרחביים ואקלימיים לכל מקטע רחוב (edge):
 
 | קבוצה | תכונה | תיאור |
 |-------|--------|-------|
-| פיזית-סטטית | `azimuth` | כיוון הרחוב באזימוט (מעלות) |
-| פיזית-סטטית | `mean_building_height` | ממוצע גובה מבנים משני צדדי המקטע |
-| פיזית-סטטית | `tree_canopy_ratio` | אחוז כיסוי חופת העצים לאורך המקטע |
-| דינמית | `sun_altitude`, `sun_azimuth` | זווית השמש ברגע הנתון (PySolar) |
-| דינמית | `temperature`, `humidity` | טמפרטורה ולחות (Open-Meteo) |
+| פיזית-סטטית | `building_height` | ממוצע גובה מבנים סביב המקטע (נקרא `mean_building_height` ב-edges_features) |
+| פיזית-סטטית | `canopy_ratio` | אחוז כיסוי חופת העצים סביב המקטע (נקרא `tree_canopy_ratio` ב-edges_features) |
+| פיזית-סטטית | `azimuth` | כיוון הרחוב (מעלות) — דקוי בנוסחה האנליטית הנוכחית |
+| דינמית | `sun_altitude` | גובה השמש ברגע הנתון (PySolar) |
+| דינמית | `temperature`, `humidity` | טמפרטורה ולחות (Open-Meteo) — פרוקסי ל-`cloud_cover` |
 | דינמית | `cloud_cover` | אחוז עננות (Open-Meteo) |
+
+> הערה: אין `sun_azimuth` במימוש הנוכחי. אזימוט השמש הוא שיפור עתידי (ראו WORKLOG / CLAUDE.md).
 
 **פלט** — ערך רציף סינתטי המייצג את מדד עומס החום המורגש במקטע: $y \in [1, 10]$ (מחושב עבור נתוני האימון באמצעות נוסחה תרמית אנליטית מבוססת קרינה ואינדקס חום).
 
@@ -98,21 +100,20 @@ $$\mathcal{L} = \text{MSE} = \frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2$$
 2. **מה עלות הטעות?** טעות גדולה = סיכון בטיחותי לאוכלוסיות פגיעות (קשישים, לבקנים, ילדים). RMSE מעלה טעויות בריבוע ומכריח את המודל להיות שמרן.
 3. **איך נראה משתנה היעד?** מתפרש על פני כל הטווח — RMSE נותן אינדיקציה אמיתית על איכות החיזוי, בניגוד למדדי סיווג שהיו מאבדים את הרזולוציה הרציפה.
 
-**חלוקת דאטה:** Train 70% / Validation 15% / Test 15%.
-הדאטה לא מפצל דגימות של רחוב בזמנים שונים  כדי לשמור בכל קבוצה על דגימות בכל שעות היממה.
+**חלוקת דאטה (בפועל ב-M3):** 80% train / 20% test, `random_state=42`, פיצול לפי שורה (לא לפי רחוב) — כך שכל קבוצה מכילה מקטעים בשעות יממה שונות. מתאים למקרה השימוש (ניווט ברשת ידועה), אך לא בודק הכללה לרחובות חדשים.
 
 **Baseline:** 
 
-ביצועי חיזוי המודל יושוו מול מודל רגרסיה ליניארית פשוטה ($\text{Baseline}$ למודל ה-ML). יעילות הניווט הכללית של האפליקציה תושווה מול אלגוריתם $\text{Dijkstra}$ המבוסס על מרחק גיאומטרי בלבד, כדי למדוד את אחוז שיפור ההצללה במסלול הנבחר.
+ה-baseline למודל ה-ML הוא `DummyRegressor(strategy="mean")` — תמיד מנבא את ממוצע ה-TCI (RMSE≈1.77 על test). כל מודל אמיתי חייב לנצח אותו. (Linear Regression / Decision Tree / Random Forest הם **מודלים מועמדים**, לא baseline.) יעילות הניווט הכללית תושווה בנפרד מול אלגוריתם $\text{Dijkstra}$ גיאומטרי.
 
-**תכנון M3 — Feature Engineering ו-Model Roadmap:**
+**M3 — מה מומש בפועל (ושיפורים עתידיים):**
 
-| שלב | פירוט |
-|-----|-------|
-| Feature Engineering | Log-transform ל-`canopy_area_m2` (Skewness קיצוני שזוהה ב-EDA); חילוץ `bearing` (כיוון רחוב במעלות) מ-OSMnx לצלב עם `sun_azimuth` לחישוב זווית הטלת הצל |
-| חלוקת דאטה | Spatial Split לפי מקטע רחוב — למניעת Data Leakage בין Train ל-Test |
-| Baseline | LinearRegression + Naive Baseline (חיזוי הממוצע) — כל מודל חייב לנצח לפחות את זה |
-| מודל מומלץ | RandomForestRegressor → XGBoost / LightGBM לאינטראקציות לא-ליניאריות (`azimuth × bearing × building height`) |
+| שלב | מומש ב-M3 | שיפור עתידי |
+|-----|-----------|-------------|
+| חלוקת דאטה | פיצול **לפי שורה**, 80/20, `random_state=42` | Spatial Split (לפי מקטע) להכללה לרחובות חדשים |
+| Baseline | **`DummyRegressor(mean)`** (RMSE≈1.77) — כל מודל חייב לנצח | — |
+| מודלים | Linear / Decision Tree / **Random Forest** (מנצח, RMSE 0.12) | XGBoost / LightGBM |
+| Feature Engineering | 7 פיצ'רים מ-`build_tci_df` | Log-transform ל-canopy; `bearing × sun_azimuth` לזווית צל |
 
 ---
 
@@ -205,6 +206,31 @@ flowchart TD
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+---
+
+## 11. M3 — Trained Model (How to Run)
+
+**אימון המודל** (מתיקיית השורש של הפרויקט):
+```bash
+python -m src.model
+```
+הפקודה מאמנת baseline (`DummyRegressor`) + 3 מודלים מועמדים (Linear / Decision Tree / Random Forest), מדפיסה טבלת השוואה לפי RMSE ו-R² על קבוצת ה-test, בוחרת את המנצח, ושומרת אותו ל-`data/tci_model.joblib`.
+
+**תוצאות (על test):**
+
+| מודל | RMSE | R² |
+|------|------|----|
+| baseline (mean) | 1.77 | ~0 |
+| Linear Regression | 0.40 | 0.95 |
+| Decision Tree | 0.21 | 0.99 |
+| **Random Forest** 🏆 | **0.12** | **0.995** |
+
+**חיזוי חי באפליקציה:** טאב **📊 ניתוח נתונים** → **גרף 4 (מפת TCI)** → בוחרים "מודל ML" + גובה שמש. האפליקציה טוענת את `data/tci_model.joblib` (דרך `load_tci_model` עם `@st.cache_resource`) וחוזה TCI **לכל מקטע רחוב** באזור → מפה צבועה לפי החיזוי.
+
+**טבלת ההשוואה וההנמקה** מוצגות בתוך האפליקציה בטאב **ℹ️ אודות** → "🏆 M3 — תוצאות" (נטענות מ-`data/model_results.json` שנוצר ע"י `python -m src.model`).
+
+> **מהימנות:** משתנה היעד (TCI) מחושב כרגע מנוסחה אנליטית (יעד סינתטי), ולכן ה-R² הגבוה משקף שהמודל משחזר את הנוסחה — צעד ביניים מתוכנן עד שיהיו תוויות אמת מדודות. אם הקובץ `data/tci_model.joblib` חסר, הריצו `python -m src.model` פעם אחת.
 
 ---
 ***SHADY - Stay Cool ;)***

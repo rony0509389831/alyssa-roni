@@ -65,3 +65,39 @@
 
 ### קבצים שנגעו בהם
 - `src/data.py` (נוצר), `src/model.py` (נוצר + עודכן), `CLAUDE.md` (עודכן), `WORKLOG.md` (נוצר).
+
+---
+
+## 2026-06-13, ~14:18 — M3: שלבים 6–8 (מודלים → הערכה → הגשה)
+
+**מטרת המושב:** להשלים את M3 מקצה-לקצה — מודלים אמיתיים, הערכה מול ה-baseline, שמירת מודל וחיבור לסטרימליט. נעשה לאחר מעבר על מצגת מפגש 6 (`l6_pipeline.pptx`).
+
+### מה עשינו
+- **שלב 6:** `build_models()` (3 Pipelines: linear+StandardScaler, tree, forest) ו-`train_and_evaluate()`.
+- **שלב 7:** טבלת השוואה מאוחדת + `select_winner()` (RMSE מינימלי) ב-`__main__`.
+- **שלב 8a:** `save_model()` עם joblib → `data/tci_model.joblib` (bundle: model + סדר פיצ'רים).
+- **שלב 8b:** `load_tci_model()` (`@st.cache_resource`) ב-app.py + **אפשרות C** — מפת TCI פר-edge בגרף 4, עם toggle נוסחה/ML וסליידר גובה-שמש.
+- **שלב 8c–e:** `joblib` ל-requirements; סעיף M3 ב-README + יישור סעיף 5; עדכון WORKLOG/CLAUDE.
+- **תצוגת תוצאות בסטרימליט (טאב אודות):** `model.py` כותב `data/model_results.json`; `load_model_results()` ב-app.py קורא אותו → טבלת השוואה, הכרזת מנצח, feature importances, והערת מהימנות. **מקור אמת אחד** (אין hardcode). תוקנו גם סתירות שהיו בטאב: Spatial Split/70-15-15 → 80/20 לפי שורה · baseline → DummyRegressor · טבלת פיצ'רים 8→7 · Feature Engineering סומן כעתידי.
+
+### תוצאות (test)
+baseline(mean) 1.772 → linear 0.400 → tree 0.210 → **forest 0.120 (R²=0.995)**. forest מנצח את הרצפה פי 14.8.
+
+### בדיקות מהימנות (חשוב להגשה)
+- פער train↔test: linear ~0 (תקין), tree 0.21 (**overfit** — train RMSE=0!), forest 0.074 (מרוסן). CV של forest: 0.128±0.014 (יציב).
+- **תקרת היעד הסינתטי:** R² גבוה משקף שחזור הנוסחה האנליטית, לא חיזוי מציאות. פיצול לפי שורה = הערכה אופטימית. מתועד כמגבלה גלויה.
+
+### החלטות עיצוב
+- ממשק החיזוי: נבחרה **אפשרות C** (מפת ML פר-edge) — פותרת את הפער "רחוב = הרבה edges": כל מקטע מקבל TCI נפרד.
+- נשמר המנצח כפי שהוערך על train (לא refit על כל הדאטה) כדי שה-RMSE המדווח יתאים למודל השמור.
+
+### בעיות ופתרונן
+- `mean_squared_error(squared=False)` deprecated ב-sklearn חדש → השתמשנו ב-`np.sqrt(mean_squared_error(...))`.
+- `tci_model.joblib` במשקל ~32MB (RandomForest ברירת מחדל) — מקובל ל-git.
+- **טאב אודות נטען לאט:** מפת גרף-4 (`st_folium` בלי `returned_objects=[]`) הפעילה ריצה-מחדש מלאה בכל גרירה/זום, ובכל ריצה נבנו מחדש ~9,800 קווים ונקראו 58k שורות parquet. → **פתרון:** `returned_objects=[]` ל-st_folium + `@st.cache_data` ל-`load_rothschild_edges` (קריאת/סינון הקשתות פעם אחת).
+
+### קבצים שנגעו בהם
+- `src/model.py` (build_models, train_and_evaluate, select_winner, save_model, כתיבת model_results.json, __main__)
+- `app.py` (load_tci_model, load_model_results, load_rothschild_edges; גרף-4: toggle/slider/חיזוי ML + returned_objects=[]; טאב אודות: טבלת תוצאות + תיקוני סנכרון)
+- `requirements.txt`, `README.md`, `CLAUDE.md`, `WORKLOG.md`
+- נוצרו: `data/tci_model.joblib`, `data/model_results.json`

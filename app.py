@@ -256,6 +256,41 @@ def build_tci_df(n: int = 5000, seed: int = 42) -> pd.DataFrame:
     })
 
 
+@st.cache_resource
+def load_tci_model(path: str = "data/tci_model.joblib"):
+    """טוען את מודל ה-TCI השמור (joblib). מחזיר bundle dict, או None אם הקובץ חסר."""
+    import joblib
+    from pathlib import Path as _P
+    if not _P(path).exists():
+        return None
+    return joblib.load(path)
+
+
+@st.cache_data
+def load_model_results(path: str = "data/model_results.json"):
+    """טוען את תוצאות השוואת המודלים (נכתב ע"י `python -m src.model`). None אם חסר."""
+    import json
+    from pathlib import Path as _P
+    if not _P(path).exists():
+        return None
+    return json.loads(_P(path).read_text(encoding="utf-8"))
+
+
+@st.cache_data
+def load_rothschild_edges():
+    """קורא את edges_features ומסנן לאזור רוטשילד — ממוטמן כדי לא לקרוא 58k שורות בכל ריצה."""
+    import geopandas as _gpd
+    from pathlib import Path as _PF
+    p = _PF("data/edges_features.parquet")
+    if not p.exists():
+        return None
+    ef = _gpd.read_parquet(p)
+    s = ef.cx[34.762:34.792, 32.054:32.076].copy()       # רוטשילד–לב העיר
+    if len(s) == 0:
+        s = ef.cx[34.774:34.800, 32.083:32.102].copy()   # fallback: הצפון הישן
+    return s
+
+
 # ── טאבים ──────────────────────────────────────────────────────────────────────
 tab_problem, tab_lit, tab_market, tab_eda, tab_map, tab_nav, tab_about = st.tabs([
     "🎯 למידת הבעיה", "📚 סקירת ספרות", "🏪 סקר שוק", "📊 ניתוח נתונים",
@@ -1639,27 +1674,47 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
         unsafe_allow_html=True,
     )
 
-    import geopandas as _gpd
-    from pathlib import Path as _PF
-    _ef_path = _PF("data/edges_features.parquet")
-    if _ef_path.exists():
-        _ef = _gpd.read_parquet(_ef_path)
-        # סינון גיאוגרפי לאזור שדרות רוטשילד ולב העיר (WGS84: lon, lat)
-        _LON_MIN, _LON_MAX = 34.762, 34.792
-        _LAT_MIN, _LAT_MAX = 32.054, 32.076
-        _ef_s = _ef.cx[_LON_MIN:_LON_MAX, _LAT_MIN:_LAT_MAX].copy()
-        # fallback לצפון הישן אם האזור ריק
-        if len(_ef_s) == 0:
-            _ef_s = _ef.cx[34.774:34.800, 32.083:32.102].copy()
+    _ef_s = load_rothschild_edges()
+    if _ef_s is not None and len(_ef_s) > 0:
+        # ── בקרות: מקור TCI (נוסחה / מודל ML) + בחירת זמן (גובה שמש) ──────────
+        _c1, _c2 = st.columns([1, 1])
+        with _c1:
+            _tci_source = st.radio(
+                "מקור TCI", ["נוסחה אנליטית", "מודל ML"],
+                horizontal=True, key="tci_source",
+            )
+        with _c2:
+            _sun_sel = st.slider(
+                "גובה השמש — שעת ייחוס (°)", 10, 78, 60, key="tci_sun",
+            )
+        _CLOUD_NOON = 0.05
 
-        _SUN_NOON, _CLOUD_NOON = 60.0, 0.05
-        _sa_r = np.radians(_SUN_NOON)
-        _bf_e = np.clip(_ef_s["mean_building_height"] / 30, 0, 1) * np.cos(_sa_r)
-        _ef_s["tci"] = np.clip(
-            1 + 9 * (_SUN_NOON / 80) * (1 - _CLOUD_NOON)
-              * (1 - 0.6 * _ef_s["tree_canopy_ratio"] - 0.4 * _bf_e),
-            1, 10,
-        )
+        _bundle = load_tci_model() if _tci_source == "מודל ML" else None
+        if _tci_source == "מודל ML" and _bundle is None:
+            st.warning("⚠️ המודל לא נמצא — הרץ `python -m src.model`. מוצגת נוסחה אנליטית.")
+
+        if _bundle is not None:
+            # אפשרות C: חיזוי TCI פר-edge ע"י מודל ה-ML (כל מקטע = שורה)
+            _n = len(_ef_s)
+            _X = pd.DataFrame({
+                "sun_altitude":    np.full(_n, _sun_sel),
+                "building_height": _ef_s["mean_building_height"].values,
+                "canopy_ratio":    _ef_s["tree_canopy_ratio"].values,
+                "cloud_cover":     np.full(_n, _CLOUD_NOON * 100),
+                "temperature":     np.full(_n, 30.0),   # ערך-ייחוס קיץ
+                "humidity":        np.full(_n, 60.0),   # ערך-ייחוס
+                "azimuth":         np.zeros(_n),         # דקוי — חסר השפעה על החיזוי
+            })[_bundle["features"]]
+            _ef_s["tci"] = np.clip(_bundle["model"].predict(_X), 1, 10)
+        else:
+            # נוסחה אנליטית — לפי גובה השמש שנבחר בסליידר
+            _sa_r = np.radians(_sun_sel)
+            _bf_e = np.clip(_ef_s["mean_building_height"] / 30, 0, 1) * np.cos(_sa_r)
+            _ef_s["tci"] = np.clip(
+                1 + 9 * (_sun_sel / 80) * (1 - _CLOUD_NOON)
+                  * (1 - 0.6 * _ef_s["tree_canopy_ratio"] - 0.4 * _bf_e),
+                1, 10,
+            )
 
         def _tci_color_map(t):
             if t <= 4:  return "#27ae60"
@@ -1687,7 +1742,7 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
                 ),
             ).add_to(_m_tci)
 
-        st_folium(_m_tci, height=540, use_container_width=True)
+        st_folium(_m_tci, height=540, use_container_width=True, returned_objects=[])
         st.caption(f"מוצגות {len(_ef_s):,} קשתות באזור רוטשילד–לב העיר")
     else:
         st.warning(
@@ -1997,37 +2052,86 @@ with tab_about:
 
     st.divider()
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # M3 — תוצאות: השוואת מודלים ובחירת מנצח (נטען מ-data/model_results.json)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("🏆 M3 — תוצאות: השוואת מודלים ובחירת מנצח")
+    _res = load_model_results()
+    if _res is None:
+        st.warning("⚠️ אין תוצאות שמורות — הריצו `python -m src.model` ליצירת `data/model_results.json`.")
+    else:
+        st.caption(
+            f"פיצול: {_res['rows']['train']:,} train / {_res['rows']['test']:,} test · "
+            f"KPI: RMSE (נמוך=טוב) · נמדד על test בלבד"
+        )
+        _tbl = pd.DataFrame(_res["table"]).rename(
+            columns={"model": "מודל", "rmse": "RMSE (test)", "r2": "R² (test)"}
+        )
+        st.dataframe(_tbl, hide_index=True, use_container_width=True)
+
+        _ratio = round(_res["baseline_mean_rmse"] / _res["winner_rmse"], 1)
+        st.success(
+            f"🏆 **המנצח: {_res['winner']}** — RMSE={_res['winner_rmse']}, R²={_res['winner_r2']} · "
+            f"מנצח את רצפת ה-baseline ({_res['baseline_mean_rmse']}) פי {_ratio}."
+        )
+
+        st.markdown(
+            """
+            **למה נבחר Random Forest?**
+            - **מנצח את הרצפה** (DummyRegressor שמנבא ממוצע) בפער עצום — מוכיח שהפיצ'רים נושאים מידע.
+            - **תופס אי-לינאריות ואינטראקציות** (sun × canopy × building) שמודל לינארי מפספס —
+              לכן ה-RMSE שלו נמוך מ-Linear ומ-Decision Tree בודד.
+            - **יציב**: ב-5-fold cross-validation קיבל RMSE 0.13 ± 0.01, ומרסן את ה-overfit
+              שעץ בודד מפגין (train RMSE=0 אך test 0.21).
+            """
+        )
+        if _res.get("importances"):
+            with st.expander("📊 חשיבות הפיצ'רים (RandomForest)"):
+                _imp = pd.DataFrame(_res["importances"], columns=["פיצ'ר", "importance"])
+                st.dataframe(_imp, hide_index=True, use_container_width=True)
+                st.caption(
+                    "sun_altitude שולט. temperature שומר חשיבות כי הוא פרוקסי ל-cloud_cover "
+                    "(קורלציה ≈ −0.99). azimuth ≈ 0 — דקוי. (קורלציה ≠ חשיבות)"
+                )
+
+        st.info(
+            "🔎 **מהימנות:** ה-R² הגבוה נובע מכך שיעד ה-TCI מחושב כרגע מנוסחה אנליטית "
+            "(יעד סינתטי) — המודל משחזר את הנוסחה. זה צעד ביניים מתוכנן; המבחן האמיתי "
+            "יגיע עם תוויות אמת מדודות."
+        )
+
+    st.divider()
+
     # ── מפת דרכים ל-M3 ──────────────────────────────────────────────────────
     st.subheader("🗺️ מפת הדרכים שלנו ל-M3")
 
     rd_col1, rd_col2 = st.columns(2)
 
     with rd_col2:
-        st.markdown("#### 1️⃣ Feature Engineering")
+        st.markdown("#### 1️⃣ Feature Engineering (שיפור עתידי)")
         st.markdown(
             """
-            - **Log-transform** ל-`canopy_area_m2` — עקב Skewness קיצוני שאנחנו זיהינו ב-EDA
-            - חילוץ **`bearing`** (כיוון הרחוב במעלות) מ-OSMnx —
-              המודל יצליב אותו עם `sun_azimuth` לחישוב מדויק של זווית הטלת הצל
+            - **Log-transform** ל-`canopy_area_m2` (Skewness שזוהה ב-EDA)
+            - חילוץ **`bearing`** (כיוון רחוב) מ-OSMnx להצלבה עם `sun_azimuth`,
+              לחישוב זווית הטלת צל מדויקת — *לא מומש ב-M3; מתוכנן להמשך*
             """
         )
 
-        st.markdown("#### 2️⃣ חלוקת הדאטה")
+        st.markdown("#### 2️⃣ חלוקת הדאטה (בפועל)")
         st.markdown(
             """
-            - **Spatial Split** (לפי מקטעי רחוב) — לא ערבוב שעות שונות של אותו רחוב
-              בין Train ל-Test, כי זה יגרום ל-Data Leakage
-            - חלוקה: **Train 70% / Val 15% / Test 15%**
+            - **80% train / 20% test**, `random_state=42` (שחזורי)
+            - פיצול **לפי שורה** — מתאים לניווט ברשת ידועה. מגבלה גלויה:
+              לא בודק הכללה לרחובות חדשים (שיפור עתידי: Spatial Split)
             """
         )
 
     with rd_col1:
-        st.markdown("#### 3️⃣ Baseline")
+        st.markdown("#### 3️⃣ Baseline (בפועל)")
         st.markdown(
             """
-            - נריץ **LinearRegression** פשוטה כ-Baseline
-            - נשווה ל-RMSE של חיזוי הממוצע (Naive Baseline) —
-              כל מודל חייב לנצח לפחות את זה
+            - **`DummyRegressor(mean)`** — מנבא ממוצע (RMSE≈1.77). כל מודל חייב לנצח אותו
+            - **LinearRegression** הוא מודל **מועמד** (לא baseline) — ראו טבלת התוצאות למעלה
             """
         )
 
@@ -2077,17 +2181,16 @@ with tab_about:
     with tci_col2:
         st.markdown(
             """
-            **פיצ'רים במודל:**
+            **7 פיצ'רים במודל:**
 
             | פיצ'ר | תיאור |
             |-------|-------|
-            | `azimuth` | כיוון הרחוב במעלות |
-            | `mean_building_height` | ממוצע גבהי המבנים הסמוכים |
-            | `tree_canopy_ratio` | יחס חופת עצים לאורך הקשת |
             | `sun_altitude` | גובה השמש בשמיים (PySolar) |
-            | `sun_azimuth` | אזימוט השמש (PySolar) |
-            | `temperature` | טמפרטורה (°C) |
-            | `humidity` | לחות יחסית (%) |
+            | `building_height` | ממוצע גבהי המבנים הסמוכים |
+            | `canopy_ratio` | יחס חופת עצים לאורך הקשת |
             | `cloud_cover` | כיסוי עננים (%) |
+            | `temperature` | טמפרטורה (°C) — פרוקסי ל-cloud_cover |
+            | `humidity` | לחות יחסית (%) |
+            | `azimuth` | כיוון הרחוב — דקוי בנוסחה הנוכחית |
             """
         )
