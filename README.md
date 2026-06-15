@@ -72,7 +72,7 @@
 
 **הגדרת הבעיה:** מודל רגרסיה לחיזוי **מדד עומס החום המורגש (Thermal Comfort Index)** של מקטע רחוב.
 
-**קלט** $X$ — וקטור של **7 מאפיינים** מרחביים ואקלימיים לכל מקטע רחוב (edge):
+**קלט** $X$ — וקטור של **5 מאפיינים** מרחביים ואקלימיים לכל מקטע רחוב (edge):
 
 | קבוצה | תכונה | מקור | תיאור |
 |-------|--------|------|-------|
@@ -80,8 +80,6 @@
 | פיזית-סטטית | `canopy_ratio` | מפ"י | אחוז כיסוי חופת עצים בבאפר 5מ' סביב המקטע |
 | גיאומטרית-מחושבת | `shadow_angle` | PySolar + OSM | זווית בין כיוון השמש לכיוון הרחוב (0°=מקביל→אין צל, 90°=ניצב→צל מקסימלי). מחושב מ-`sun_azimuth` (PySolar) ומ-`street_azimuth` (bearing הקשת מ-OSM). |
 | דינמית | `sun_altitude` | PySolar | גובה השמש מעל האופק ברגע הנתון |
-| דינמית | `temperature` | Open-Meteo | טמפרטורה (°C) |
-| דינמית | `humidity` | Open-Meteo | לחות יחסית (%) |
 | דינמית | `cloud_cover` | Open-Meteo | אחוז עננות |
 
 **נוסחת ה-TCI האנליטית** (משמשת ליצירת תוויות האימון):
@@ -120,7 +118,7 @@ $$\mathcal{L} = \text{MSE} = \frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2$$
 | חלוקת דאטה | פיצול **לפי שורה**, 80/20, `random_state=42` | Spatial Split (לפי מקטע) להכללה לרחובות חדשים |
 | Baseline | **`DummyRegressor(mean)`** (RMSE≈1.77) — כל מודל חייב לנצח | — |
 | מודלים | Linear / Decision Tree / **Random Forest** (מנצח, RMSE≈0.13) | XGBoost / LightGBM |
-| Feature Engineering | 7 פיצ'רים כולל `shadow_angle` (זווית שמש-רחוב) | Log-transform ל-canopy; הוספת טמפרטורה לנוסחה |
+| Feature Engineering | 5 פיצ'רים כולל `shadow_angle` (זווית שמש-רחוב) | Log-transform ל-canopy; הוספת טמפרטורה ולחות לנוסחה עם תוויות אמת |
 | תוויות | TCI סינתטי מנוסחה אנליטית | תוויות אמת מדודות בשטח |
 
 ---
@@ -242,9 +240,7 @@ python -m src.model
 |--------|---------|
 | `sun_altitude` | 0.756 |
 | `cloud_cover` | 0.110 |
-| `temperature` | 0.073 |
 | `canopy_ratio` | 0.047 |
-| `humidity` | 0.007 |
 | `building_height` | 0.005 |
 | `shadow_angle` | 0.002 |
 

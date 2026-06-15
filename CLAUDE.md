@@ -27,15 +27,18 @@ pysolar, scikit-learn, networkx, pytest
 ## ML Model
 
 - **משימה:** רגרסיה — חיזוי Thermal Comfort Index (ציון 1–10) לכל קשת בגרף הרחובות.
-- **פיצ'רים (7, מקור אמת = `build_tci_df` ב-`app.py`/`src/data.py`):** `sun_altitude`, `building_height`, `canopy_ratio`, `cloud_cover`, `temperature`, `humidity`, `azimuth`.
-  - בטבלת האימון השמות הם `building_height`/`canopy_ratio`; בקובץ `edges_features.parquet` הם `mean_building_height`/`tree_canopy_ratio`. אין `sun_azimuth`.
-  - `temperature`/`humidity`/`azimuth` אינם נכנסים לנוסחת ה-TCI האנליטית (decoys) — המודל אמור ללמוד להוריד להם משקל.
+- **פיצ'רים (7, מקור אמת = `build_tci_df` ב-`app.py`/`src/data.py`):** `sun_altitude`, `building_height`, `canopy_ratio`, `cloud_cover`, `temperature`, `humidity`, `shadow_angle`.
+  - בטבלת האימון השמות הם `building_height`/`canopy_ratio`; בקובץ `edges_features.parquet` הם `mean_building_height`/`tree_canopy_ratio`/`street_azimuth`. `shadow_angle` מחושב בזמן ריצה מ-`sun_azimuth` (PySolar) ו-`street_azimuth` (OSM bearing).
+  - `temperature`/`humidity` אינם נכנסים לנוסחת ה-TCI האנליטית (decoys) — המודל אמור ללמוד להוריד להם משקל.
 - **חישוב Sun Position:** PySolar (משולב ישירות ב-`app.py` ו-`notebooks/01_eda.ipynb`)
 - **נוסחה analytic נוכחית (MVP):**
   ```
-  TCI = 1 + 9 * (sun_altitude/80) * (1 - cloud_cover/100) * (1 - 0.6*canopy_ratio - 0.4*building_factor)
+  shadow_factor = sin(shadow_angle)                              # 0°=מקביל לרחוב, 90°=ניצב
+  bf = clip(building_height / 30, 0, 1) * cos(sun_altitude) * shadow_factor
+  TCI = clip( 1 + 9 * (sun_altitude/80) * (1 - cloud_cover/100) * (1 - 0.6*canopy_ratio - 0.4*bf), 1, 10 )
   ```
-  מחושבת ב-`build_tci_df()` ב-`app.py`; טווח מוצמד ל-[1, 10].
+  `shadow_angle` = זווית בין כיוון השמש לכיוון הרחוב (0°=שמש מקבילה לרחוב→אין צל, 90°=ניצבת→צל מקסימלי).
+  מחושבת ב-`build_tci_df()` ב-`app.py` וב-`src/data.py`; טווח מוצמד ל-[1, 10].
 - **`src/data.py`** — `build_tci_df()`: בונה טבלת אימון (7 פיצ'רים + TCI) מ-`edges_features.parquet`, ללא Streamlit (גרסה נקייה של הפונקציה שב-`app.py`).
 - **`src/model.py`** — מממש M3 שלבים 3–8: `load_train_test`, `evaluate` (RMSE+R²), `run_baselines` (DummyRegressor), `build_models` (3 Pipelines), `train_and_evaluate`, `select_winner`, `save_model`. מנצח: **RandomForest (RMSE≈0.12 על test)** → נשמר ל-`data/tci_model.joblib` ונטען ב-app.py (גרף 4, מפת ML פר-edge). הרצה: `python -m src.model`.
 - **Loss:** MSE | **מטריקה (KPI):** RMSE (ראשי) + R² (בונוס)
@@ -139,4 +142,4 @@ alyssa-roni/
 - לוגיקת בניית טבלת האימון (`build_tci_df`) הוצאה ל-`src/data.py` כי ייבוא מ-`app.py` מריץ את כל אפליקציית Streamlit; קיימת כרגע כפילות מכוונת בין השניים
 - ה-baseline של M3 הוא `DummyRegressor(strategy="mean")` (לא Linear Regression) — הממוצע ממזער RMSE בהגדרה, ולכן הוא הרצפה ההוגנת תחת ה-KPI; median נבדק כרצפה משנית בגלל הטיה ימנית
 - היעד הסינתטי: ה-TCI מחושב מהנוסחה האנליטית, אז מודל ה-ML בשלב 6 בעצם לומד לשחזר אותה — צעד ביניים מתוכנן עד שיהיו תוויות אמת מדודות
-- נוסחת ה-TCI מתעלמת מכיוון השמש (תופסת רק אורך צל דרך `cos(sun_altitude)`). שיפור עתידי: אינטראקציה זווית-יחסית שמש↔רחוב (`|sun_azimuth − street_azimuth|` × גובה מבנה) — רק אז `sun_azimuth` הופך פיצ'ר משמעותי. כרגע decoy, הושמט בצדק
+- נוסחת ה-TCI כוללת `shadow_angle` כפיצ'ר מחושב: `shadow_angle = min(|sun_az%180 − street_az|, 180−|...|)` — שיפור פיזיקלי לעומת נוסחות שהתעלמו מכיוון הרחוב. `sun_azimuth` הגולמי אינו פיצ'ר ישיר אלא נכנס לנוסחה רק דרך `shadow_angle`. `temperature`/`humidity` הם decoys בנוסחה האנליטית — נשמרו במודל לבדיקת בחירת פיצ'רים

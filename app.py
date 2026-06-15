@@ -55,7 +55,7 @@ st.markdown(
         html, body, [class*="stApp"], [data-testid="stAppViewContainer"],
         [data-testid="stSidebar"], [data-testid="stMarkdownContainer"] {
             direction: rtl;
-            text-align: right;
+            text-align: right;אקלם
             unicode-bidi: plaintext;
         }
 
