@@ -27,7 +27,11 @@ except ImportError:
     _WEATHER = False
 
 try:
-    from src.routing import geocode_address, compute_route, build_route_map
+    from src.routing import (
+        geocode_address, compute_route,
+        compute_tci_weights, compute_shaded_route,
+        build_route_map,
+    )
     _ROUTING = True
 except ImportError:
     _ROUTING = False
@@ -137,6 +141,13 @@ def load_trees_full() -> pd.DataFrame:
 
 buildings = load_buildings()
 trees = load_trees()
+
+# מזג אוויר — נשמר ב-cache ל-5 דקות כדי שלא ייקרא HTTP request בכל rerun
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_weather_cached() -> dict:
+    if _WEATHER:
+        return _get_weather()
+    return {"temperature": 27.0, "humidity": 65.0, "cloud_cover": 30.0, "source": "default"}
 
 if _ROUTING:
     @st.cache_data(show_spinner=False)
@@ -293,6 +304,44 @@ def load_model_results(path: str = "data/model_results.json"):
 
 
 @st.cache_data
+def load_edges_full():
+    """טוען את כל פיצ'רי הקשתות (58k שורות) — לניווט מוצל."""
+    import geopandas as _gpd
+    from pathlib import Path as _PF
+    p = _PF("data/edges_features.parquet")
+    if not p.exists():
+        return None
+    return _gpd.read_parquet(p)
+
+
+@st.cache_resource(show_spinner="טוען גרף רחובות...")
+def _load_nav_graph():
+    """טוען את גרף הרחובות לזיכרון — נקרא פעם אחת לכל חיי התהליך."""
+    from src.routing import load_graph
+    return load_graph()
+
+
+@st.cache_data(show_spinner=False)
+def _precompute_nav_weights(
+    sun_alt_r: float, sun_az_r: float,
+    cloud_r: float, temp_r: float, hum_r: float,
+):
+    """
+    מחשב TCI ל-58k קשתות ומחזיר (weight_dict, tci_by_uv).
+    ממוטמן לפי פרמטרי מזג אוויר מעוגלים — אותם תנאים → cache hit (0ms).
+    """
+    _bundle   = load_tci_model()
+    _edges_df = load_edges_full()
+    if _bundle is None or _edges_df is None:
+        return None, None
+    return compute_tci_weights(
+        _edges_df, _bundle,
+        float(sun_alt_r), float(sun_az_r),
+        float(cloud_r), float(temp_r), float(hum_r),
+    )
+
+
+@st.cache_data
 def load_rothschild_edges():
     """קורא את edges_features ומסנן לאזור רוטשילד — ממוטמן כדי לא לקרוא 58k שורות בכל ריצה."""
     import geopandas as _gpd
@@ -306,6 +355,12 @@ def load_rothschild_edges():
         s = ef.cx[34.774:34.800, 32.083:32.102].copy()   # fallback: הצפון הישן
     return s
 
+
+# ── טעינה מוקדמת של גרף הרחובות ──────────────────────────────────────────────
+# נטען כאן (לפני הטאבים) כדי שה-cache יהיה חם עד שהמשתמש יגיע לטאב הניווט.
+# בגלל @st.cache_resource ו-module-level cache ב-routing.py, רץ פעם אחת בלבד.
+if _ROUTING:
+    _load_nav_graph()
 
 # ── טאבים ──────────────────────────────────────────────────────────────────────
 tab_problem, tab_lit, tab_market, tab_eda, tab_map, tab_nav, tab_about = st.tabs([
@@ -1751,23 +1806,26 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
         _m_tci = folium.Map(
             location=[32.065, 34.776], zoom_start=15, tiles="CartoDB positron"
         )
-        for _, _row in _ef_s.iterrows():
-            if _row.geometry is None:
-                continue
-            try:
-                _coords = [(lat, lon) for lon, lat in _row.geometry.coords]
-            except Exception:
-                continue
-            folium.PolyLine(
-                _coords,
-                color=_tci_color_map(_row["tci"]),
-                weight=3, opacity=0.85,
-                tooltip=(
-                    f"TCI={_row['tci']:.1f} | "
-                    f"h={_row['mean_building_height']:.0f}m | "
-                    f"canopy={_row['tree_canopy_ratio']:.2f}"
-                ),
-            ).add_to(_m_tci)
+
+        # GeoJson שכבה אחת במקום ~9800 PolyLine נפרדים — 7x פחות HTML
+        _ef_plot = _ef_s[["geometry", "tci", "mean_building_height", "tree_canopy_ratio"]].copy()
+        _ef_plot["mean_building_height"] = _ef_plot["mean_building_height"].fillna(0).round(1)
+        _ef_plot["tree_canopy_ratio"]    = _ef_plot["tree_canopy_ratio"].fillna(0).round(2)
+        _ef_plot["tci"]                  = _ef_plot["tci"].round(1)
+        _ef_plot["_color"]               = _ef_plot["tci"].apply(_tci_color_map)
+
+        folium.GeoJson(
+            _ef_plot,
+            style_function=lambda f: {
+                "color":   f["properties"]["_color"],
+                "weight":  3,
+                "opacity": 0.85,
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=["tci", "mean_building_height", "tree_canopy_ratio"],
+                aliases=["TCI", "גובה מבנה (מ')", "חופת עצים"],
+            ),
+        ).add_to(_m_tci)
 
         st_folium(_m_tci, height=540, use_container_width=True, returned_objects=[])
         st.caption(f"מוצגות {len(_ef_s):,} קשתות באזור רוטשילד–לב העיר")
@@ -1790,10 +1848,7 @@ with tab_map:
     )
 
     # ── מזג אוויר ומיקום שמש ─────────────────────────────────────────────────
-    if _WEATHER:
-        weather = _get_weather()
-    else:
-        weather = {"temperature": 27.0, "humidity": 65.0, "cloud_cover": 30.0, "source": "default"}
+    weather = _get_weather_cached()
 
     if _PYSOLAR:
         now_utc = datetime.now(timezone.utc)
@@ -1837,49 +1892,55 @@ with tab_map:
         if h < 35: return "#e74c3c"
         return "#6c3483"
 
-    _map = folium.Map(location=[32.088, 34.772], zoom_start=15, tiles="CartoDB positron")
+    # cache key: המפה נבנית מחדש רק כשמשנים שכבות או כיוון שמש
+    _map_key = f"tab_map_{show_buildings}_{show_trees}_{round(sun_az) if sun_up else 'night'}"
+    if _map_key not in st.session_state:
+        _m = folium.Map(location=[32.088, 34.772], zoom_start=15, tiles="CartoDB positron")
 
-    if show_buildings:
-        b_layer = folium.FeatureGroup(name="מבנים", show=True)
-        for _, row in buildings_old_north.iterrows():
-            folium.CircleMarker(
-                location=[row["lat"], row["lon"]],
-                radius=3,
-                color=_height_color(row["height"]),
-                fill=True,
-                fill_opacity=0.75,
-                weight=0,
-                tooltip=f"{row['height']:.1f} מ'",
-            ).add_to(b_layer)
-        b_layer.add_to(_map)
+        if show_buildings:
+            b_layer = folium.FeatureGroup(name="מבנים", show=True)
+            for _, row in buildings_old_north.iterrows():
+                folium.CircleMarker(
+                    location=[row["lat"], row["lon"]],
+                    radius=3,
+                    color=_height_color(row["height"]),
+                    fill=True,
+                    fill_opacity=0.75,
+                    weight=0,
+                    tooltip=f"{row['height']:.1f} מ'",
+                ).add_to(b_layer)
+            b_layer.add_to(_m)
 
-    if show_trees:
-        t_layer = folium.FeatureGroup(name="חופת עצים", show=True)
-        HeatMap(
-            trees_old_north[["lat", "lon", "canopy_area_m2"]].values.tolist(),
-            radius=8, blur=6, min_opacity=0.3,
-        ).add_to(t_layer)
-        t_layer.add_to(_map)
+        if show_trees:
+            t_layer = folium.FeatureGroup(name="חופת עצים", show=True)
+            HeatMap(
+                trees_old_north[["lat", "lon", "canopy_area_m2"]].values.tolist(),
+                radius=8, blur=6, min_opacity=0.3,
+            ).add_to(t_layer)
+            t_layer.add_to(_m)
 
-    if sun_up:
-        sun_layer = folium.FeatureGroup(name="☀️ כיוון שמש", show=True)
-        folium.Marker(
-            location=[32.088, 34.772],
-            icon=folium.DivIcon(
-                html=(
-                    f'<div style="font-size:26px;'
-                    f'transform:rotate({sun_az:.0f}deg);'
-                    f'transform-origin:center;">'
-                    f"☀️</div>"
+        if sun_up:
+            sun_layer = folium.FeatureGroup(name="☀️ כיוון שמש", show=True)
+            folium.Marker(
+                location=[32.088, 34.772],
+                icon=folium.DivIcon(
+                    html=(
+                        f'<div style="font-size:26px;'
+                        f'transform:rotate({sun_az:.0f}deg);'
+                        f'transform-origin:center;">'
+                        f"☀️</div>"
+                    ),
+                    icon_size=(34, 34),
+                    icon_anchor=(17, 17),
                 ),
-                icon_size=(34, 34),
-                icon_anchor=(17, 17),
-            ),
-            tooltip=f"גובה שמש: {sun_alt:.1f}° | אזימוט: {sun_az:.0f}°",
-        ).add_to(sun_layer)
-        sun_layer.add_to(_map)
+                tooltip=f"גובה שמש: {sun_alt:.1f}° | אזימוט: {sun_az:.0f}°",
+            ).add_to(sun_layer)
+            sun_layer.add_to(_m)
 
-    folium.LayerControl(collapsed=False).add_to(_map)
+        folium.LayerControl(collapsed=False).add_to(_m)
+        st.session_state[_map_key] = _m
+
+    _map = st.session_state[_map_key]
 
     with col_map_area:
         st_folium(_map, height=620, width=1100)
@@ -1894,6 +1955,16 @@ with tab_nav:
     if not _ROUTING:
         st.error("⚠️ חבילת `osmnx` לא מותקנת — התקן עם `pip install osmnx networkx` והפעל מחדש.")
         st.stop()
+
+    # הגרף כבר נטען לפני הטאבים — הקריאה הזו מחזירה אותו מה-cache (0ms).
+    _nav_G = _load_nav_graph()
+
+    route_mode = st.radio(
+        "סוג מסלול",
+        ["🌿 הכי מוצל (מודל ML)", "⚡ הכי מהיר (OSRM)"],
+        horizontal=True,
+        index=0,
+    )
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1916,15 +1987,59 @@ with tab_nav:
         if not origin_input.strip() or not dest_input.strip():
             st.warning("⚠️ יש להזין גם נקודת מוצא וגם יעד.")
         else:
-            with st.spinner("מחשב מסלול..."):
-                error_msg = None
-                route_result = None
+            _use_shaded  = route_mode.startswith("🌿")
+            _route_color = "#27ae60" if _use_shaded else "#2980b9"
+            _spinner_msg = "מחשב מסלול מוצל..." if _use_shaded else "מחשב מסלול..."
+
+            with st.spinner(_spinner_msg):
+                error_msg     = None
+                route_result  = None
                 origin_latlon = None
-                dest_latlon = None
+                dest_latlon   = None
                 try:
                     origin_latlon = _geocode_cached(origin_input)
-                    dest_latlon = _geocode_cached(dest_input)
-                    route_result = compute_route(origin_latlon, dest_latlon)
+                    dest_latlon   = _geocode_cached(dest_input)
+
+                    if _use_shaded:
+                        _bundle   = load_tci_model()
+                        _edges_df = load_edges_full()
+                        if _bundle is None or _edges_df is None:
+                            st.warning("⚠️ מודל ML או קובץ פיצ'רים לא זמין — עובר למסלול מהיר.")
+                            route_result = compute_route(origin_latlon, dest_latlon)
+                            _route_color = "#2980b9"
+                        else:
+                            # מזג אוויר ושמש
+                            _nav_w = _get_weather_cached()
+                            if _PYSOLAR:
+                                from datetime import datetime as _dt, timezone as _tz
+                                _now = _dt.now(_tz.utc)
+                                _nav_sun_alt = float(_solar.get_altitude(32.08, 34.77, _now))
+                                _nav_sun_az  = float(_solar.get_azimuth(32.08, 34.77, _now))
+                            else:
+                                _nav_sun_alt, _nav_sun_az = 45.0, 180.0
+
+                            # עיגול לצורך cache — RF מחושב פעם אחת לכל תנאי מזג אוויר
+                            _alt_r   = round(_nav_sun_alt / 5) * 5
+                            _az_r    = round(_nav_sun_az  / 10) * 10
+                            _cloud_r = round(_nav_w["cloud_cover"] / 10) * 10
+                            _temp_r  = round(_nav_w["temperature"] / 5) * 5
+                            _hum_r   = round(_nav_w["humidity"]    / 10) * 10
+
+                            _wdict, _tci_uv = _precompute_nav_weights(
+                                _alt_r, _az_r, _cloud_r, _temp_r, _hum_r
+                            )
+                            if _wdict is None:
+                                route_result = compute_route(origin_latlon, dest_latlon)
+                                _route_color = "#2980b9"
+                            else:
+                                route_result = compute_shaded_route(
+                                    origin_latlon, dest_latlon,
+                                    _wdict, _tci_uv,
+                                    G=_nav_G,
+                                )
+                    else:
+                        route_result = compute_route(origin_latlon, dest_latlon)
+
                 except ValueError as e:
                     error_msg = f"❌ {e}"
                 except Exception as e:
@@ -1933,10 +2048,16 @@ with tab_nav:
             if error_msg:
                 st.error(error_msg)
             else:
-                m1, m2 = st.columns(2)
-                m1.metric("📏 מרחק", f"{route_result['distance_m']:.0f} מ'")
-                m2.metric("⏱️ זמן הליכה משוער", f"{route_result['duration_min']:.0f} דקות")
-                route_map = build_route_map(origin_latlon, dest_latlon, route_result)
+                _avg_tci = route_result.get("avg_tci")
+                _n_cols  = 3 if _avg_tci is not None else 2
+                _mc      = st.columns(_n_cols)
+                _mc[0].metric("📏 מרחק", f"{route_result['distance_m']:.0f} מ'")
+                _mc[1].metric("⏱️ זמן הליכה משוער", f"{route_result['duration_min']:.0f} דקות")
+                if _avg_tci is not None:
+                    _mc[2].metric("☀️ חשיפה ממוצעת לשמש", f"{_avg_tci:.1f} / 10",
+                                  help="TCI: 1 = מוצל לחלוטין · 10 = חשיפה מלאה לשמש")
+                route_map = build_route_map(origin_latlon, dest_latlon, route_result,
+                                            color=_route_color)
                 st_folium(route_map, height=520, width=1100, returned_objects=[])
     else:
         _empty_map = folium.Map(
@@ -1944,7 +2065,7 @@ with tab_nav:
         )
         st_folium(_empty_map, height=520, width=1100, returned_objects=[])
 
-    st.caption("ניווט מבוסס: OSMnx · Nominatim · NetworkX Dijkstra")
+    st.caption("ניווט מבוסס: OSMnx · Nominatim · NetworkX Dijkstra · RandomForest TCI")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
