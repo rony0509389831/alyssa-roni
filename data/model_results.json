@@ -3,60 +3,60 @@
     "train": 4000,
     "test": 1000
   },
-  "baseline_mean_rmse": 1.772,
+  "baseline_mean_rmse": 1.77,
   "table": [
     {
       "model": "baseline (mean)",
-      "rmse": 1.772,
-      "r2": -0.0018
+      "rmse": 1.77,
+      "r2": -0.0017
     },
     {
       "model": "linear",
-      "rmse": 0.4,
-      "r2": 0.9489
+      "rmse": 0.391,
+      "r2": 0.9512
     },
     {
       "model": "tree",
-      "rmse": 0.21,
-      "r2": 0.9859
+      "rmse": 0.204,
+      "r2": 0.9867
     },
     {
       "model": "forest",
-      "rmse": 0.12,
-      "r2": 0.9954
+      "rmse": 0.129,
+      "r2": 0.9947
     }
   ],
   "winner": "forest",
-  "winner_rmse": 0.12,
-  "winner_r2": 0.9954,
+  "winner_rmse": 0.129,
+  "winner_r2": 0.9947,
   "importances": [
     [
       "sun_altitude",
-      0.752
+      0.756
     ],
     [
       "cloud_cover",
-      0.101
+      0.11
     ],
     [
       "temperature",
-      0.079
+      0.073
     ],
     [
       "canopy_ratio",
       0.047
     ],
     [
-      "building_height",
-      0.013
-    ],
-    [
       "humidity",
       0.007
     ],
     [
-      "azimuth",
-      0.001
+      "building_height",
+      0.005
+    ],
+    [
+      "shadow_angle",
+      0.002
     ]
   ]
 }

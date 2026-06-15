@@ -187,20 +187,22 @@ def build_tci_df(n: int = 5000, seed: int = 42) -> pd.DataFrame:
     _edges_path = _Path("data/edges_features.parquet")
     if _edges_path.exists():
         # נתונים מחושבים לפי קשת אמיתית (Spatial Join) — דגימת שורה שלמה לשמירת הצמד
-        _ef = pd.read_parquet(_edges_path, columns=["mean_building_height", "tree_canopy_ratio"])
+        _ef = pd.read_parquet(_edges_path, columns=["mean_building_height", "tree_canopy_ratio", "street_azimuth"])
         _ef = _ef.fillna(0)
         _idx = rng.choice(len(_ef), size=n, replace=True)  # אותו אינדקס = אותו רחוב
-        bh = _ef["mean_building_height"].values[_idx]
-        cr = _ef["tree_canopy_ratio"].values[_idx]
+        bh        = _ef["mean_building_height"].values[_idx]
+        cr        = _ef["tree_canopy_ratio"].values[_idx]
+        street_az = _ef["street_azimuth"].values[_idx]  # 0°–180°, כיוון הרחוב
     else:
         # fallback — דגימה מהתפלגות גלובלית (לפני הרצת precompute_features.py)
-        bh = rng.choice(load_buildings()["height"].values, size=n, replace=True)
-        cr = np.clip(
+        bh        = rng.choice(load_buildings()["height"].values, size=n, replace=True)
+        cr        = np.clip(
             rng.choice(load_trees_full()["canopy_area_m2"].values, size=n, replace=True) / 500,
             0, 1,
         )
+        street_az = rng.uniform(0, 180, n)
 
-    # זוויות שמש — PySolar: כל שעה ביום × 12 חודשים (יום 15) עבור ת"א
+    # מיקום שמש — PySolar מחזיר זוגות (altitude, azimuth) לת"א
     if _PYSOLAR:
         _sun_pool = []
         for _mo in range(1, 13):
@@ -208,14 +210,24 @@ def build_tci_df(n: int = 5000, seed: int = 42) -> pd.DataFrame:
                 try:
                     _dt = datetime(2024, _mo, 15, _hr, tzinfo=timezone.utc)
                     _alt = _solar.get_altitude(32.08, 34.77, _dt)
-                    if _alt > 10:  # מתחת ל-10° השמש לא "מכה" — שחר/שקיעה זניחים
-                        _sun_pool.append(float(_alt))
+                    if _alt > 10:
+                        _az = _solar.get_azimuth(32.08, 34.77, _dt)
+                        _sun_pool.append((float(_alt), float(_az)))
                 except Exception:
                     pass
-        sa = rng.choice(_sun_pool, size=n, replace=True) if _sun_pool else rng.uniform(5, 72, n)
+        if _sun_pool:
+            _chosen = rng.integers(0, len(_sun_pool), size=n)
+            sa     = np.array([_sun_pool[i][0] for i in _chosen])
+            sun_az = np.array([_sun_pool[i][1] for i in _chosen])
+        else:
+            sa     = rng.uniform(5, 72, n)
+            sun_az = rng.uniform(0, 360, n)
     else:
-        _pre_baked = [18.1, 31.4, 44.2, 55.3, 64.1, 70.2, 72.1, 70.1, 64.0, 55.1, 44.0]
-        sa = rng.choice(_pre_baked, size=n, replace=True)
+        _pre_baked = [(18.1,140.0),(31.4,155.0),(44.2,165.0),(55.3,175.0),
+                      (64.1,185.0),(70.2,195.0),(72.1,180.0)]
+        _chosen = rng.integers(0, len(_pre_baked), size=n)
+        sa     = np.array([_pre_baked[i][0] for i in _chosen])
+        sun_az = np.array([_pre_baked[i][1] for i in _chosen])
 
     # מזג אוויר — מ-12 ערכים חודשיים אמיתיים
     try:
@@ -233,12 +245,16 @@ def build_tci_df(n: int = 5000, seed: int = 42) -> pd.DataFrame:
         cloud = rng.uniform(0, 50, n)
         humid = rng.uniform(65, 80, n)
 
-    az = rng.uniform(0, 360, n)
+    # shadow_angle: זווית בין כיוון השמש לכיוון הרחוב, 0°–90°
+    _sun_dir     = sun_az % 180
+    _diff        = np.abs(_sun_dir - street_az)
+    shadow_angle = np.minimum(_diff, 180 - _diff)
 
     # חישוב TCI מהנוסחה האנליטית
     _W1, _W2 = 0.6, 0.4
     sa_rad = np.radians(sa)
-    bf = np.clip(bh / 30, 0, 1) * np.cos(sa_rad)
+    shadow_factor = np.sin(np.radians(shadow_angle))
+    bf = np.clip(bh / 30, 0, 1) * np.cos(sa_rad) * shadow_factor
     tci = np.clip(
         1 + 9 * (sa / 80) * (1 - cloud / 100) * (1 - _W1 * cr - _W2 * bf),
         1, 10,
@@ -251,7 +267,7 @@ def build_tci_df(n: int = 5000, seed: int = 42) -> pd.DataFrame:
         "cloud_cover":     cloud,
         "temperature":     temp,
         "humidity":        humid,
-        "azimuth":         az,
+        "shadow_angle":    shadow_angle,
         "TCI":             tci,
     })
 
@@ -1297,7 +1313,7 @@ with tab_eda:
     st.subheader("☀️ חלק ג׳ — ניתוח זווית השמש")
     st.markdown(
         '<p style="font-size:13px;color:#888;direction:rtl;text-align:right;margin:0 0 8px 0;">'
-        'פיצ\'רים: <code style="direction:ltr;display:inline-block;">sun_altitude, azimuth</code>'
+        'פיצ\'רים: <code style="direction:ltr;display:inline-block;">sun_altitude, shadow_angle</code>'
         ' &nbsp;·&nbsp; ת"א (32.08°N, 34.77°E) &nbsp;·&nbsp; PySolar</p>',
         unsafe_allow_html=True,
     )
@@ -1470,7 +1486,7 @@ TCI = clip( 1 + 9 &times; (sun_altitude/80) &times; (1 &minus; cloud_cover) &tim
 </code>
 <br>
 <code style="background:#dbeafe;padding:4px 10px;border-radius:4px;font-size:13px;display:inline-block;margin:2px 0;">
-Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = clip(height/30, 0, 1) &times; cos(sun_altitude_rad)
+Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = clip(height/30, 0, 1) &times; cos(sun_altitude_rad) &times; sin(shadow_angle_rad)
 </code>
 <br><br>
 <b>פירוש הגורמים:</b>
@@ -1494,7 +1510,7 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
         ("temperature",          "Open-Meteo", "13–28°C", "↑ עולה — חום מגביר אי-נוחות",   "#e74c3c"),
         ("cloud_cover",          "Open-Meteo", "0–50%",   "↓ יורד — עננות מסננת קרינה",    "#27ae60"),
         ("humidity",             "Open-Meteo", "65–80%",  "↑ קל — לחות מגבירה תחושת חום",  "#e67e22"),
-        ("azimuth",              "PySolar",    "0°–360°", "מורכב — תלוי כיוון הרחוב",       "#666666"),
+        ("shadow_angle",          "PySolar+OSM", "0°–90°",  "↓ יורד — שמש ניצבת לרחוב = צל", "#27ae60"),
     ]
     _feat_rows_html = ""
     for _fi, (_fname, _fsrc, _frng, _feff, _fcol) in enumerate(_feat_data):
@@ -1677,21 +1693,32 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
     _ef_s = load_rothschild_edges()
     if _ef_s is not None and len(_ef_s) > 0:
         # ── בקרות: מקור TCI (נוסחה / מודל ML) + בחירת זמן (גובה שמש) ──────────
-        _c1, _c2 = st.columns([1, 1])
+        _c1, _c2, _c3 = st.columns([1, 1, 1])
         with _c1:
             _tci_source = st.radio(
                 "מקור TCI", ["נוסחה אנליטית", "מודל ML"],
                 horizontal=True, key="tci_source",
             )
         with _c2:
-            _sun_sel = st.slider(
-                "גובה השמש — שעת ייחוס (°)", 10, 78, 60, key="tci_sun",
+            _sun_sel = st.number_input(
+                "גובה השמש — שעת ייחוס (°)", min_value=10, max_value=78,
+                value=60, step=5, key="tci_sun",
             )
+        with _c3:
+            st.caption("10° = שחר/שקיעה · 45° = בוקר/אחה\"צ · 72° = צהריים קיץ")
         _CLOUD_NOON = 0.05
 
         _bundle = load_tci_model() if _tci_source == "מודל ML" else None
         if _tci_source == "מודל ML" and _bundle is None:
             st.warning("⚠️ המודל לא נמצא — הרץ `python -m src.model`. מוצגת נוסחה אנליטית.")
+
+        # אזימוט שמש ייחוס — 180° (דרום) = צהריים קיץ אופייני לת"א
+        _SUN_AZ_REF = 180.0
+        _sun_dir_ref = _SUN_AZ_REF % 180
+        _street_az = _ef_s["street_azimuth"].values if "street_azimuth" in _ef_s.columns else np.full(len(_ef_s), 90.0)
+        _diff_ref = np.abs(_sun_dir_ref - _street_az)
+        _shadow_angle_e = np.minimum(_diff_ref, 180 - _diff_ref)
+        _shadow_factor_e = np.sin(np.radians(_shadow_angle_e))
 
         if _bundle is not None:
             # אפשרות C: חיזוי TCI פר-edge ע"י מודל ה-ML (כל מקטע = שורה)
@@ -1701,15 +1728,15 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
                 "building_height": _ef_s["mean_building_height"].values,
                 "canopy_ratio":    _ef_s["tree_canopy_ratio"].values,
                 "cloud_cover":     np.full(_n, _CLOUD_NOON * 100),
-                "temperature":     np.full(_n, 30.0),   # ערך-ייחוס קיץ
-                "humidity":        np.full(_n, 60.0),   # ערך-ייחוס
-                "azimuth":         np.zeros(_n),         # דקוי — חסר השפעה על החיזוי
+                "temperature":     np.full(_n, 30.0),
+                "humidity":        np.full(_n, 60.0),
+                "shadow_angle":    _shadow_angle_e,
             })[_bundle["features"]]
             _ef_s["tci"] = np.clip(_bundle["model"].predict(_X), 1, 10)
         else:
-            # נוסחה אנליטית — לפי גובה השמש שנבחר בסליידר
+            # נוסחה אנליטית — גובה שמש מהסליידר, אזימוט ייחוס 180° (דרום)
             _sa_r = np.radians(_sun_sel)
-            _bf_e = np.clip(_ef_s["mean_building_height"] / 30, 0, 1) * np.cos(_sa_r)
+            _bf_e = np.clip(_ef_s["mean_building_height"] / 30, 0, 1) * np.cos(_sa_r) * _shadow_factor_e
             _ef_s["tci"] = np.clip(
                 1 + 9 * (_sun_sel / 80) * (1 - _CLOUD_NOON)
                   * (1 - 0.6 * _ef_s["tree_canopy_ratio"] - 0.4 * _bf_e),
@@ -2091,7 +2118,8 @@ with tab_about:
                 st.dataframe(_imp, hide_index=True, use_container_width=True)
                 st.caption(
                     "sun_altitude שולט. temperature שומר חשיבות כי הוא פרוקסי ל-cloud_cover "
-                    "(קורלציה ≈ −0.99). azimuth ≈ 0 — דקוי. (קורלציה ≠ חשיבות)"
+                    "(קורלציה ≈ −0.99). shadow_angle = זווית בין כיוון השמש לכיוון הרחוב (0°=מקביל, 90°=ניצב). "
+                    "(קורלציה ≠ חשיבות)"
                 )
 
         st.info(
@@ -2191,6 +2219,6 @@ with tab_about:
             | `cloud_cover` | כיסוי עננים (%) |
             | `temperature` | טמפרטורה (°C) — פרוקסי ל-cloud_cover |
             | `humidity` | לחות יחסית (%) |
-            | `azimuth` | כיוון הרחוב — דקוי בנוסחה הנוכחית |
+            | `shadow_angle` | זווית שמש-רחוב (0°=מקביל→אין צל, 90°=ניצב→צל מקסימלי) |
             """
         )

@@ -47,6 +47,21 @@ def _load_trees(trees_path: Path) -> gpd.GeoDataFrame:
     return gdf[["canopy_area_m2", "geometry"]]
 
 
+def _compute_street_azimuth(gdf: gpd.GeoDataFrame) -> np.ndarray:
+    """
+    מחשב bearing (0°–180°) לכל קשת מתוך ה-LineString שלה.
+    0° = רחוב צפון-דרום, 90° = רחוב מזרח-מערב.
+    כיוון הרחוב סימטרי (N==S), לכן mod 180.
+    """
+    def _bearing(line) -> float:
+        coords = list(line.coords)
+        dx = coords[-1][0] - coords[0][0]
+        dy = coords[-1][1] - coords[0][1]
+        return float(np.degrees(np.arctan2(dx, dy)) % 180)
+
+    return gdf.geometry.apply(_bearing).values
+
+
 def compute_edge_features(
     G: nx.MultiDiGraph,
     buildings_path: Path = BUILDINGS_PATH,
@@ -54,17 +69,18 @@ def compute_edge_features(
     output_path: Path = OUTPUT_PATH,
 ) -> pd.DataFrame:
     """
-    מחשב mean_building_height ו-tree_canopy_ratio לכל קשת ב-G.
+    מחשב mean_building_height, tree_canopy_ratio ו-street_azimuth לכל קשת ב-G.
 
     תהליך:
       1. קשתות → GeoDataFrame (LineString) → EPSG:2039
       2. buffer 5m סביב כל קשת
       3. sjoin עם מבנים → ממוצע גובה לכל קשת
       4. sjoin עם עצים → סכום שטח חופה → ratio מתוך שטח buffer
-      5. שמירה ל-output_path
+      5. bearing (כיוון רחוב 0°–180°) מגיאומטריה
+      6. שמירה ל-output_path
 
     מחזיר DataFrame עם עמודות: u, v, key, length,
-                                 mean_building_height, tree_canopy_ratio
+                                 mean_building_height, tree_canopy_ratio, street_azimuth
     """
     print("Loading edges from graph...")
     edges_gdf = ox.graph_to_gdfs(G, nodes=False).reset_index()
@@ -125,11 +141,13 @@ def compute_edge_features(
     result_geo = edges_gdf[["_eid", "geometry"]].merge(result, on="_eid").drop(columns=["_eid"])
     result_geo = gpd.GeoDataFrame(result_geo, geometry="geometry", crs=_CRS_METRIC)
     result_geo = result_geo.to_crs("EPSG:4326")
+    result_geo["street_azimuth"] = _compute_street_azimuth(result_geo)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result_geo.to_parquet(output_path, index=False)
     print(f"\nSaved -> {output_path}")
     print(f"  {len(result_geo):,} edges | mean_building_height: "
           f"{result_geo['mean_building_height'].mean():.1f}m | "
-          f"tree_canopy_ratio: {result_geo['tree_canopy_ratio'].mean():.3f}")
+          f"tree_canopy_ratio: {result_geo['tree_canopy_ratio'].mean():.3f} | "
+          f"street_azimuth mean: {result_geo['street_azimuth'].mean():.1f}°")
     return result_geo

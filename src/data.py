@@ -27,21 +27,22 @@ CLIMATE_PATH = Path("data/climate_fallback.json")
 # 7 הפיצ'רים שמנבאים TCI + עמודת היעד
 FEATURE_COLS = [
     "sun_altitude", "building_height", "canopy_ratio",
-    "cloud_cover", "temperature", "humidity", "azimuth",
+    "cloud_cover", "temperature", "humidity", "shadow_angle",
 ]
 TARGET_COL = "TCI"
 
 
-def _sun_altitude_pool():
-    """בריכת גבהי שמש אמיתיים לת"א — כל שעה x 12 חודשים, מעל 10° בלבד."""
+def _sun_position_pool():
+    """בריכת זוויות שמש אמיתיות לת"א — (altitude, azimuth) לכל שעה × 12 חודשים, מעל 10°."""
     pool = []
     for mo in range(1, 13):
         for hr in range(0, 24):
             try:
                 dt = datetime(2024, mo, 15, hr, tzinfo=timezone.utc)
                 alt = _solar.get_altitude(_TLV_LAT, _TLV_LON, dt)
-                if alt > 10:  # מתחת ל-10° השמש לא "מכה" — זניח לנוחות תרמית
-                    pool.append(float(alt))
+                if alt > 10:
+                    az = _solar.get_azimuth(_TLV_LAT, _TLV_LON, dt)
+                    pool.append((float(alt), float(az)))
             except Exception:
                 pass
     return pool
@@ -61,21 +62,32 @@ def build_tci_df(n: int = 5000, seed: int = 42) -> pd.DataFrame:
             f"{EDGES_PATH} לא נמצא — הרץ קודם: python precompute_features.py"
         )
 
-    # מאפייני רחוב (קבועים לכל קשת) — דגימת אינדקס אחד לשמירת הצמד גובה+חופה
+    # מאפייני רחוב (קבועים לכל קשת) — דגימת אינדקס אחד לשמירת הצמד גובה+חופה+כיוון
     ef = pd.read_parquet(
-        EDGES_PATH, columns=["mean_building_height", "tree_canopy_ratio"]
+        EDGES_PATH, columns=["mean_building_height", "tree_canopy_ratio", "street_azimuth"]
     ).fillna(0)
     idx = rng.choice(len(ef), size=n, replace=True)
     bh = ef["mean_building_height"].values[idx]
     cr = ef["tree_canopy_ratio"].values[idx]
+    street_az = ef["street_azimuth"].values[idx]  # 0°–180°, כיוון הרחוב
 
-    # גובה שמש — PySolar, עם fallback לערכים חודשיים אופייניים
+    # מיקום שמש — PySolar מחזיר זוגות (altitude, azimuth) לת"א
     if _PYSOLAR:
-        pool = _sun_altitude_pool()
-        sa = rng.choice(pool, size=n, replace=True) if pool else rng.uniform(5, 72, n)
+        pool = _sun_position_pool()
+        if pool:
+            chosen = rng.integers(0, len(pool), size=n)
+            sa      = np.array([pool[i][0] for i in chosen])
+            sun_az  = np.array([pool[i][1] for i in chosen])
+        else:
+            sa     = rng.uniform(5, 72, n)
+            sun_az = rng.uniform(0, 360, n)
     else:
-        pre_baked = [18.1, 31.4, 44.2, 55.3, 64.1, 70.2, 72.1, 70.1, 64.0, 55.1, 44.0]
-        sa = rng.choice(pre_baked, size=n, replace=True)
+        # ערכים אופייניים לת"א (altitude, azimuth) ללא PySolar
+        pre_baked = [(18.1,140.0),(31.4,155.0),(44.2,165.0),(55.3,175.0),
+                     (64.1,185.0),(70.2,195.0),(72.1,180.0)]
+        chosen = rng.integers(0, len(pre_baked), size=n)
+        sa     = np.array([pre_baked[i][0] for i in chosen])
+        sun_az = np.array([pre_baked[i][1] for i in chosen])
 
     # מזג אוויר — 12 ערכים חודשיים אמיתיים, עם fallback
     try:
@@ -91,11 +103,17 @@ def build_tci_df(n: int = 5000, seed: int = 42) -> pd.DataFrame:
         cloud = rng.uniform(0, 50, n)
         humid = rng.uniform(65, 80, n)
 
-    az = rng.uniform(0, 360, n)
+    # shadow_angle: זווית בין כיוון השמש לכיוון הרחוב, 0°–90°
+    # 0° = שמש מקבילה לרחוב (צל לאורך הרחוב, לא מעבר) → shadow_factor=0
+    # 90° = שמש ניצבת לרחוב (צל חוצה את הרחוב) → shadow_factor=1
+    sun_dir = sun_az % 180          # 0°–180° (כיוון בידירקציונלי)
+    diff = np.abs(sun_dir - street_az)
+    shadow_angle = np.minimum(diff, 180 - diff)   # 0°–90°
 
     # חישוב TCI מהנוסחה האנליטית (זהה ל-app.py)
     w1, w2 = 0.6, 0.4
-    bf = np.clip(bh / 30, 0, 1) * np.cos(np.radians(sa))
+    shadow_factor = np.sin(np.radians(shadow_angle))
+    bf = np.clip(bh / 30, 0, 1) * np.cos(np.radians(sa)) * shadow_factor
     tci = np.clip(
         1 + 9 * (sa / 80) * (1 - cloud / 100) * (1 - w1 * cr - w2 * bf),
         1, 10,
@@ -108,6 +126,6 @@ def build_tci_df(n: int = 5000, seed: int = 42) -> pd.DataFrame:
         "cloud_cover":     cloud,
         "temperature":     temp,
         "humidity":        humid,
-        "azimuth":         az,
+        "shadow_angle":    shadow_angle,
         "TCI":             tci,
     })

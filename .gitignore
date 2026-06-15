@@ -42,3 +42,6 @@ ENV/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# cache של OSMnx (geocoding) — נוצר אוטומטית, לא שייך ל-repo
+cache/

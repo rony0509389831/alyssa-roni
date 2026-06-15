@@ -7,10 +7,15 @@
 """
 from pathlib import Path
 
+import tempfile
+
 import folium
 import networkx as nx
 import osmnx as ox
 import requests
+
+# מפנה את cache ה-geocoding לתיקיית הטמפ' של המערכת, לא לתיקיית הפרויקט
+ox.settings.cache_folder = tempfile.gettempdir()
 
 TA_LAT, TA_LON = 32.0853, 34.7818
 TA_BBOX = (32.02, 34.73, 32.15, 34.85)   # (lat_min, lon_min, lat_max, lon_max)
