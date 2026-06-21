@@ -2055,7 +2055,7 @@ with tab_nav:
                 _mc[1].metric("⏱️ זמן הליכה משוער", f"{route_result['duration_min']:.0f} דקות")
                 if _avg_tci is not None:
                     _mc[2].metric("☀️ חשיפה ממוצעת לשמש", f"{_avg_tci:.1f} / 10",
-                                  help="TCI: 1 = מוצל לחלוטין · 10 = חשיפה מלאה לשמש")
+                                  help="🟢 TCI 1 = מוצל לחלוטין  \n🔴 TCI 10 = חשיפה מלאה לשמש")
                 route_map = build_route_map(origin_latlon, dest_latlon, route_result,
                                             color=_route_color)
                 st_folium(route_map, height=520, width=1100, returned_objects=[])

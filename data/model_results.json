@@ -1,46 +1,51 @@
 {
   "rows": {
-    "train": 4000,
-    "test": 1000
+    "train": 3500,
+    "val": 750,
+    "test": 750
   },
-  "baseline_mean_rmse": 1.77,
+  "baseline_mean_rmse": 1.79,
   "table": [
     {
       "model": "baseline (mean)",
-      "rmse": 1.77,
+      "rmse": 1.79,
+      "rmse_val": null,
       "r2": -0.0017
     },
     {
       "model": "linear",
-      "rmse": 0.391,
-      "r2": 0.9512
+      "rmse_val": 0.395,
+      "rmse": 0.396,
+      "r2": 0.9509
     },
     {
       "model": "tree",
-      "rmse": 0.204,
-      "r2": 0.9867
+      "rmse_val": 0.21,
+      "rmse": 0.193,
+      "r2": 0.9883
     },
     {
       "model": "forest",
-      "rmse": 0.129,
-      "r2": 0.9947
+      "rmse_val": 0.135,
+      "rmse": 0.113,
+      "r2": 0.996
     }
   ],
   "winner": "forest",
-  "winner_rmse": 0.129,
-  "winner_r2": 0.9947,
+  "winner_rmse": 0.113,
+  "winner_r2": 0.996,
   "importances": [
     [
       "sun_altitude",
-      0.756
+      0.754
     ],
     [
       "cloud_cover",
-      0.11
+      0.117
     ],
     [
       "temperature",
-      0.073
+      0.067
     ],
     [
       "canopy_ratio",
@@ -48,7 +53,7 @@
     ],
     [
       "humidity",
-      0.007
+      0.008
     ],
     [
       "building_height",
@@ -58,5 +63,35 @@
       "shadow_angle",
       0.002
     ]
-  ]
+  ],
+  "error_analysis": {
+    "mae": 0.063,
+    "max_error": 0.722,
+    "slices": {
+      "sun_altitude": {
+        "Q1 (low)": 0.062,
+        "Q2": 0.135,
+        "Q3": 0.115,
+        "Q4 (high)": 0.125
+      },
+      "cloud_cover": {
+        "Q1 (low)": 0.1,
+        "Q2": 0.148,
+        "Q3": 0.119,
+        "Q4 (high)": 0.072
+      },
+      "temperature": {
+        "Q1 (low)": 0.072,
+        "Q2": 0.13,
+        "Q3": 0.125,
+        "Q4 (high)": 0.108
+      },
+      "shadow_angle": {
+        "Q1 (low)": 0.085,
+        "Q2": 0.101,
+        "Q3": 0.109,
+        "Q4 (high)": 0.146
+      }
+    }
+  }
 }

@@ -6,10 +6,12 @@
   שלב 2 — KPI: RMSE (ככל שנמוך יותר, טוב יותר). נמדד על test בלבד.
             R² מדווח כבונוס (R²=0 = רמת הניחוש-הממוצע).
 
-הקובץ מממש כרגע:
-  שלב 3 — חלוקת train/test  (load_train_test)
+הקובץ מממש:
+  שלב 3 — חלוקת train/val/test 70/15/15  (load_train_val_test)
   שלב 5 — baseline טיפש: DummyRegressor  (run_baselines)
-שלבים 4 (preprocessing) ו-6-7 (מודלים אמיתיים + הערכה) יתווספו בהמשך.
+  שלב 6 — 3 מודלים מועמדים עטופי Pipeline  (train_and_evaluate)
+  שלב 7 — בחירת מנצח לפי val, דיווח על test  (select_winner)
+  שלב 8 — שמירת מנצח + ניתוח שגיאות  (save_model, analyze_errors)
 
 הרצה (מתיקיית השורש של הפרויקט):
     python -m src.model
@@ -29,23 +31,33 @@ from sklearn.tree import DecisionTreeRegressor
 
 from src.data import build_tci_df, FEATURE_COLS, TARGET_COL
 
+# פיצ'רים שאינם חלק מנוסחת TCI — נכללו לבדיקת בחירת פיצ'רים
+DECOY_COLS = ["temperature", "humidity"]
 
-def load_train_test(n: int = 5000, seed: int = 42, test_size: float = 0.2):
+
+def load_train_val_test(n: int = 5000, seed: int = 42,
+                        val_size: float = 0.15, test_size: float = 0.15):
     """
-    בונה את טבלת האימון ומפצל ל-train/test.
+    בונה את טבלת האימון ומפצל ל-train/val/test (70/15/15).
 
-    מחזיר: X_train, X_test, y_train, y_test
+    val  — לבחירת מנצח ולכיוון hyperparameters (מציצים בו חופשי).
+    test — נגיעה אחת בסוף בלבד; המספר שמדווחים להצגה.
+
+    מחזיר: X_train, X_val, X_test, y_train, y_val, y_test
     """
     df = build_tci_df(n=n, seed=seed)
-    X = df[FEATURE_COLS]   # 7 הפיצ'רים שמנבאים TCI
-    y = df[TARGET_COL]     # היעד הרציף (רגרסיה)
+    X = df[FEATURE_COLS]
+    y = df[TARGET_COL]
 
-    # שלב 3: לא נוגעים ב-X_test / y_test עד ההערכה הסופית (שלב 7).
-    # random_state מקבע את החלוקה — שחזוריות מלאה בין הרצות.
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=seed
+    # פיצול ראשון: train vs (val+test)
+    X_train, X_tmp, y_train, y_tmp = train_test_split(
+        X, y, test_size=val_size + test_size, random_state=seed
     )
-    return X_train, X_test, y_train, y_test
+    # פיצול שני: val vs test — 50/50 מתוך ה-30% שנשאר
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_tmp, y_tmp, test_size=0.5, random_state=seed
+    )
+    return X_train, X_val, X_test, y_train, y_val, y_test
 
 
 def evaluate(y_true, y_pred) -> dict:
@@ -95,17 +107,22 @@ def build_models() -> dict:
     }
 
 
-def train_and_evaluate(X_train, X_test, y_train, y_test) -> dict:
+def train_and_evaluate(X_train, X_test, y_train, y_test,
+                        X_val=None, y_val=None) -> dict:
     """
-    שלב 6: מאמן כל מודל על train ומודד RMSE+R² על test.
+    שלב 6: מאמן כל מודל על train.
 
-    מחזיר: {name: {"rmse", "r2", "model"}}  (ה-model הוא ה-Pipeline המאומן)
+    אם X_val/y_val מסופקים — מוסיף "rmse_val" לכל מודל.
+    select_winner() ישתמש ב-rmse_val לבחירה (test נשאר נקי).
+
+    מחזיר: {name: {"rmse", "r2", "model", ["rmse_val"]}}
     """
     results = {}
     for name, model in build_models().items():
-        model.fit(X_train, y_train)        # Pipeline: scaler.fit_transform → reg.fit
-        y_pred = model.predict(X_test)     # Pipeline: scaler.transform → reg.predict
-        metrics = evaluate(y_test, y_pred)
+        model.fit(X_train, y_train)
+        metrics = evaluate(y_test, model.predict(X_test))
+        if X_val is not None:
+            metrics["rmse_val"] = evaluate(y_val, model.predict(X_val))["rmse"]
         metrics["model"] = model
         results[name] = metrics
     return results
@@ -120,8 +137,14 @@ def forest_importances(model, feature_cols=FEATURE_COLS):
 
 
 def select_winner(results: dict):
-    """שלב 7: בוחר את המודל עם ה-RMSE הנמוך ביותר על test. מחזיר (name, metrics)."""
-    name = min(results, key=lambda k: results[k]["rmse"])
+    """
+    שלב 7: בוחר את המודל עם ה-RMSE הנמוך ביותר.
+
+    משתמש ב-rmse_val אם קיים (val ניטרלי לבחירה) — אחרת נופל על rmse_test.
+    מחזיר (name, metrics).
+    """
+    sort_key = "rmse_val" if "rmse_val" in next(iter(results.values())) else "rmse"
+    name = min(results, key=lambda k: results[k][sort_key])
     return name, results[name]
 
 
@@ -148,15 +171,69 @@ def save_model(model, path=MODEL_PATH, **metadata) -> Path:
     return path
 
 
+def analyze_errors(model, X_test, y_test, feature_cols=FEATURE_COLS, n_worst: int = 10) -> dict:
+    """
+    בדיקה 5: ניתוח שגיאות על ה-test set.
+
+    מחזיר dict עם:
+      residuals  — מערך (y_true - y_pred) לכל שורה
+      y_pred     — תחזיות המודל
+      mae        — Mean Absolute Error ממוצע
+      worst      — DataFrame של n_worst השורות עם השגיאה הגדולה ביותר
+      slices     — RMSE לפי רבעוני כל פיצ'ר (מגלה אזורי חולשה)
+    """
+    import pandas as pd
+
+    y_pred = model.predict(X_test)
+    residuals = np.asarray(y_test) - y_pred
+    abs_err = np.abs(residuals)
+
+    df = X_test.copy().reset_index(drop=True)
+    df["y_true"] = np.asarray(y_test)
+    df["y_pred"] = y_pred
+    df["abs_error"] = abs_err
+
+    worst = df.nlargest(n_worst, "abs_error")[
+        ["y_true", "y_pred", "abs_error"] + list(feature_cols)
+    ].reset_index(drop=True)
+
+    # RMSE לפי רבעוני כל פיצ'ר — חושף אם המודל גרוע על ערכים קיצוניים
+    slices = {}
+    for col in feature_cols:
+        try:
+            df["_q"] = pd.qcut(df[col], q=4,
+                                labels=["Q1 (low)", "Q2", "Q3", "Q4 (high)"],
+                                duplicates="drop")
+            slices[col] = (
+                df.groupby("_q", observed=True)["abs_error"]
+                .agg(rmse=lambda x: float(np.sqrt((x**2).mean())))
+                .to_dict()["rmse"]
+            )
+        except Exception:
+            pass
+    df.drop(columns=["_q"], errors="ignore", inplace=True)
+
+    return {
+        "residuals": residuals,
+        "y_pred": y_pred,
+        "mae": float(np.mean(abs_err)),
+        "worst": worst,
+        "slices": slices,
+    }
+
+
 if __name__ == "__main__":
+    import json
     import sys
     sys.stdout.reconfigure(encoding="utf-8")  # תמיכה בעברית בקונסול Windows
 
-    X_train, X_test, y_train, y_test = load_train_test()
-    print(f"train: {X_train.shape[0]:,} rows | test: {X_test.shape[0]:,} rows")
+    # ── שלב 3 (בדיקה 2): train/val/test נפרדים — val לבחירה, test לדיווח ──────
+    X_train, X_val, X_test, y_train, y_val, y_test = load_train_val_test()
+    print(f"train: {X_train.shape[0]:,} | val: {X_val.shape[0]:,} | test: {X_test.shape[0]:,} rows")
     print(f"features ({len(FEATURE_COLS)}): {FEATURE_COLS}")
     print(f"target: {TARGET_COL}  (range {y_train.min():.2f}-{y_train.max():.2f})\n")
 
+    # ── שלב 5: baseline — נמדד על test ──────────────────────────────────────────
     print("=== Step 5: baseline (DummyRegressor) — measured on TEST ===")
     print(f"{'strategy':<10}{'predicts':>10}{'RMSE':>10}{'R2':>10}")
     baselines = run_baselines(X_train, X_test, y_train, y_test)
@@ -165,17 +242,19 @@ if __name__ == "__main__":
     floor = baselines["mean"]["rmse"]
     print(f"\nהרצפה: RMSE={floor:.3f} (mean) — כל מודל אמיתי צריך לנצח אותה.\n")
 
-    # ── שלב 6+7: מאמן מודלים ומשווה הכל בטבלה אחת ──────────────────────────────
-    models = train_and_evaluate(X_train, X_test, y_train, y_test)
+    # ── שלבים 6+7: אימון עם val לבחירה, test לדיווח ────────────────────────────
+    models = train_and_evaluate(X_train, X_test, y_train, y_test, X_val, y_val)
 
-    print("=== Step 7: comparison — RMSE / R² on TEST ===")
-    print(f"{'model':<20}{'RMSE':>10}{'R2':>10}")
-    print(f"{'baseline (mean)':<20}{floor:>10.3f}{baselines['mean']['r2']:>10.4f}")
+    print("=== Step 7: comparison — RMSE_val (choice) / RMSE_test / R² ===")
+    print(f"{'model':<20}{'RMSE_val':>12}{'RMSE_test':>12}{'R2_test':>10}")
+    print(f"{'baseline (mean)':<20}{'—':>12}{floor:>12.3f}{baselines['mean']['r2']:>10.4f}")
     for name, m in models.items():
-        print(f"{name:<20}{m['rmse']:>10.3f}{m['r2']:>10.4f}")
+        rv = f"{m['rmse_val']:.3f}" if "rmse_val" in m else "—"
+        print(f"{name:<20}{rv:>12}{m['rmse']:>12.3f}{m['r2']:>10.4f}")
 
     winner, wm = select_winner(models)
-    print(f"\n🏆 מנצח: {winner} — RMSE={wm['rmse']:.3f}, R²={wm['r2']:.4f}")
+    chosen_by = "VAL" if "rmse_val" in wm else "TEST"
+    print(f"\n🏆 מנצח ({chosen_by}): {winner} — RMSE_test={wm['rmse']:.3f}, R²={wm['r2']:.4f}")
     print(f"   משפר את הרצפה (RMSE={floor:.3f}) פי {floor / wm['rmse']:.1f}.")
 
     imp = forest_importances(models["forest"]["model"])
@@ -184,27 +263,78 @@ if __name__ == "__main__":
         for k, v in imp:
             print(f"  {k:<18}{v:.3f}")
 
-    # שלב 8a: שמירת המודל המנצח (כפי שהוערך על train) — האפליקציה תטען אותו
+    # ── ניתוח Decoy Features ─────────────────────────────────────────────────
+    _imp_dict = dict(imp) if imp else {}
+    _decoy_imp = {col: round(_imp_dict.get(col, 0.0), 3) for col in DECOY_COLS}
+    _total_decoy = sum(_decoy_imp.values())
+    print("\n=== Decoy Feature Analysis (temperature & humidity) ===")
+    print("שני הפיצ'רים אינם חלק מנוסחת TCI — אמורים להיות בעלי חשיבות ~0:")
+    for col, v in _decoy_imp.items():
+        flag = "⚠" if v > 0.01 else "✓"
+        print(f"  {flag} {col:<12} {v:.3f}")
+    print(f"  סה\"כ: {_total_decoy:.1%} מהחשיבות הכוללת")
+    if _total_decoy > 0.05:
+        print("  הסבר: קורלציה עונתית עקיפה — חודשי קיץ בנתוני האימון")
+        print("         מתאמים טמפרטורה גבוהה עם sun_altitude גבוה (לא קשר סיבתי).")
+        print("         בנתוני שטח אמיתיים, קורלציה זו צפויה להיחלש.")
+
+    # ── שלב 8a: שמירת המודל המנצח ───────────────────────────────────────────────
     saved = save_model(wm["model"], name=winner, rmse=wm["rmse"])
     print(f"\n💾 נשמר המודל המנצח ({winner}) → {saved}")
 
-    # תוצאות ההשוואה ל-JSON — מקור אמת אחד לתצוגה בסטרימליט (טאב אודות)
-    import json
+    # ── בדיקה 5: ניתוח שגיאות על ה-test set ────────────────────────────────────
+    print("\n=== Check 5: Error Analysis on TEST ===")
+    err = analyze_errors(wm["model"], X_test, y_test)
+    print(f"MAE={err['mae']:.3f}  |  max_error={err['worst']['abs_error'].iloc[0]:.3f}")
+
+    print(f"\nTop-5 worst predictions (out of {X_test.shape[0]:,} test rows):")
+    print(err["worst"][["y_true", "y_pred", "abs_error"]].head(5).to_string(index=False))
+
+    print("\nRMSE by feature quartile (↑ = model struggles at this range):")
+    for feat, rmse_by_q in err["slices"].items():
+        row = "  ".join(f"{q}:{v:.3f}" for q, v in rmse_by_q.items())
+        print(f"  {feat:<20} {row}")
+
+    # ── JSON לסטרימליט (טאב אודות) ──────────────────────────────────────────────
     _summary = {
-        "rows": {"train": int(X_train.shape[0]), "test": int(X_test.shape[0])},
+        "rows": {
+            "train": int(X_train.shape[0]),
+            "val": int(X_val.shape[0]),
+            "test": int(X_test.shape[0]),
+        },
         "baseline_mean_rmse": round(floor, 3),
         "table": (
             [{"model": "baseline (mean)", "rmse": round(floor, 3),
-              "r2": round(baselines["mean"]["r2"], 4)}]
-            + [{"model": n, "rmse": round(m["rmse"], 3), "r2": round(m["r2"], 4)}
+              "rmse_val": None, "r2": round(baselines["mean"]["r2"], 4)}]
+            + [{"model": n,
+                "rmse_val": round(m["rmse_val"], 3) if "rmse_val" in m else None,
+                "rmse": round(m["rmse"], 3),
+                "r2": round(m["r2"], 4)}
                for n, m in models.items()]
         ),
         "winner": winner,
         "winner_rmse": round(wm["rmse"], 3),
         "winner_r2": round(wm["r2"], 4),
         "importances": [[k, round(v, 3)] for k, v in (imp or [])],
+        "error_analysis": {
+            "mae": round(err["mae"], 3),
+            "max_error": round(float(err["worst"]["abs_error"].iloc[0]), 3),
+            "slices": {
+                feat: {q: round(v, 3) for q, v in qs.items()}
+                for feat, qs in err["slices"].items()
+            },
+        },
+        "decoy_analysis": {
+            "note": "temperature ו-humidity אינם חלק מנוסחת TCI — נכללו לבדיקת בחירת פיצ'רים",
+            "importances": _decoy_imp,
+            "total": round(_total_decoy, 3),
+            "explanation": (
+                "קורלציה עונתית עקיפה: חודשי קיץ בנתוני האימון מתאמים "
+                "טמפרטורה גבוהה עם sun_altitude גבוה — לא קשר סיבתי."
+            ),
+        },
     }
     Path("data/model_results.json").write_text(
         json.dumps(_summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print("📄 נשמרו תוצאות → data/model_results.json")
+    print("\n📄 נשמרו תוצאות → data/model_results.json")
