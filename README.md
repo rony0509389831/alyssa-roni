@@ -1,5 +1,7 @@
 # SHADY — Thermal-Comfort Urban Routing System
 
+🌐 **[Live App: shady-smart-navigation.streamlit.app](https://shady-smart-navigation.streamlit.app/)**
+
 > **One-Liner:** אופטימיזציה של תנועה עירונית להולכי רגל שמתעדפים צל באמצעות שכבות מידע גיאוגרפי ומאגרי מידע חינמיים ברשת.
 
 ---
