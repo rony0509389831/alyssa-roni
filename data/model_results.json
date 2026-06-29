@@ -4,94 +4,103 @@
     "val": 750,
     "test": 750
   },
-  "baseline_mean_rmse": 1.79,
+  "baseline_mean_rmse": 2.137,
   "table": [
     {
       "model": "baseline (mean)",
-      "rmse": 1.79,
+      "rmse": 2.137,
       "rmse_val": null,
-      "r2": -0.0017
+      "r2": -0.006
     },
     {
       "model": "linear",
-      "rmse_val": 0.395,
-      "rmse": 0.396,
-      "r2": 0.9509
+      "rmse_val": 0.54,
+      "rmse": 0.572,
+      "r2": 0.9281
     },
     {
       "model": "tree",
-      "rmse_val": 0.21,
-      "rmse": 0.193,
-      "r2": 0.9883
+      "rmse_val": 0.233,
+      "rmse": 0.218,
+      "r2": 0.9896
     },
     {
       "model": "forest",
-      "rmse_val": 0.135,
-      "rmse": 0.113,
-      "r2": 0.996
+      "rmse_val": 0.136,
+      "rmse": 0.136,
+      "r2": 0.9959
     }
   ],
   "winner": "forest",
-  "winner_rmse": 0.113,
-  "winner_r2": 0.996,
+  "winner_rmse": 0.136,
+  "winner_r2": 0.9959,
   "importances": [
     [
       "sun_altitude",
-      0.754
-    ],
-    [
-      "cloud_cover",
-      0.117
+      0.747
     ],
     [
       "temperature",
-      0.067
+      0.111
+    ],
+    [
+      "shadow_cov",
+      0.072
     ],
     [
       "canopy_ratio",
-      0.047
+      0.034
+    ],
+    [
+      "cloud_cover",
+      0.029
     ],
     [
       "humidity",
-      0.008
+      0.006
     ],
     [
       "building_height",
-      0.005
-    ],
-    [
-      "shadow_angle",
-      0.002
+      0.001
     ]
   ],
   "error_analysis": {
-    "mae": 0.063,
-    "max_error": 0.722,
+    "mae": 0.079,
+    "max_error": 1.591,
     "slices": {
       "sun_altitude": {
-        "Q1 (low)": 0.062,
-        "Q2": 0.135,
-        "Q3": 0.115,
-        "Q4 (high)": 0.125
+        "Q1 (low)": 0.053,
+        "Q2": 0.156,
+        "Q3": 0.159,
+        "Q4 (high)": 0.15
+      },
+      "canopy_ratio": {
+        "Q1 (low)": 0.087,
+        "Q2": 0.084,
+        "Q3": 0.116,
+        "Q4 (high)": 0.214
       },
       "cloud_cover": {
-        "Q1 (low)": 0.1,
-        "Q2": 0.148,
+        "Q1 (low)": 0.13,
+        "Q2": 0.17,
         "Q3": 0.119,
-        "Q4 (high)": 0.072
+        "Q4 (high)": 0.117
       },
       "temperature": {
-        "Q1 (low)": 0.072,
-        "Q2": 0.13,
-        "Q3": 0.125,
-        "Q4 (high)": 0.108
-      },
-      "shadow_angle": {
-        "Q1 (low)": 0.085,
-        "Q2": 0.101,
-        "Q3": 0.109,
-        "Q4 (high)": 0.146
+        "Q1 (low)": 0.117,
+        "Q2": 0.119,
+        "Q3": 0.183,
+        "Q4 (high)": 0.111
       }
     }
+  },
+  "decoy_analysis": {
+    "note": "temperature ו-humidity אינם חלק מנוסחת TCI — נכללו לבדיקת בחירת פיצ'רים",
+    "importances": {
+      "temperature": 0.111,
+      "humidity": 0.006
+    },
+    "total": 0.117,
+    "explanation": "קורלציה עונתית עקיפה: חודשי קיץ בנתוני האימון מתאמים טמפרטורה גבוהה עם sun_altitude גבוה — לא קשר סיבתי."
   }
 }
