@@ -139,9 +139,6 @@ def load_trees_full() -> pd.DataFrame:
     return df[["OBJECTID", "canopy_perimeter_m", "canopy_area_m2",
                "lon", "lat", "Geometry_Type", "area_class"]].copy()
 
-buildings = load_buildings()
-trees = load_trees()
-
 # מזג אוויר — נשמר ב-cache ל-5 דקות כדי שלא ייקרא HTTP request בכל rerun
 @st.cache_data(ttl=300, show_spinner=False)
 def _get_weather_cached() -> dict:
@@ -179,8 +176,6 @@ def load_trees_old_north() -> pd.DataFrame:
         result = result.sample(n=3000, random_state=42).reset_index(drop=True)
     return result
 
-buildings_old_north = load_buildings_old_north()
-trees_old_north = load_trees_old_north()
 
 
 @st.cache_data
@@ -1229,6 +1224,7 @@ with tab_market:
 # TAB 3 — EDA
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_eda:
+    buildings = load_buildings()
     st.title("📊 ניתוח נתונים — EDA")
     st.caption("שכבות הנתונים של SHADY: מבנים · עצים · שמש · מזג אוויר")
 
@@ -1840,6 +1836,8 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
 # TAB 2 — MAP (מדגם: הצפון הישן)
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_map:
+    buildings_old_north = load_buildings_old_north()
+    trees_old_north = load_trees_old_north()
     st.title("🗺️ שכבות מרחביות – הצפון הישן, תל אביב")
     st.caption(
         f"מדגם שכונתי לצורכי הדגמת הנתונים | "
