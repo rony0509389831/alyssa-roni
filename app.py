@@ -35,6 +35,13 @@ try:
 except ImportError:
     _ROUTING = False
 
+# M4 — סוכן LLM לחילוץ פרמטרי ניווט מטקסט חופשי (ייבוא groq עצל בתוך הפונקציה)
+try:
+    from src.agent import extract_route_params
+    _AGENT = True
+except ImportError:
+    _AGENT = False
+
 matplotlib.rcParams["font.family"] = "DejaVu Sans"
 matplotlib.rcParams["axes.unicode_minus"] = False
 warnings.filterwarnings("ignore")
@@ -1979,11 +1986,57 @@ with tab_nav:
     # הגרף כבר נטען לפני הטאבים — הקריאה הזו מחזירה אותו מה-cache (0ms).
     _nav_G = _load_nav_graph()
 
+    # ── סוכן LLM (M4) ──────────────────────────────────────────────────────────
+    # מחלץ פרמטרים מטקסט חופשי וממלא את טופס הניווט שלמטה. חייב לרוץ *לפני* יצירת
+    # ה-widgets, אחרת Streamlit אוסר לכתוב ל-session_state של widget קיים.
+    st.markdown("#### 💬 דברו עם הסוכן")
+    _agent_text = st.text_input(
+        "תארו את הבקשה במשפט אחד",
+        placeholder='לדוגמה: "מכיכר רבין לשוק הכרמל ב-3 אחה\"צ בדרך הכי מוצלת"',
+        key="agent_text",
+    )
+    if st.button("שלח לסוכן 🤖"):
+        try:
+            _groq_key = st.secrets.get("GROQ_API_KEY")
+        except Exception:
+            _groq_key = None
+        if not _AGENT:
+            st.warning("⚠️ מודול הסוכן לא זמין (בדקו שהותקן `groq`).")
+        elif not _groq_key:
+            st.warning("⚠️ מפתח `GROQ_API_KEY` חסר — הוסיפו אותו ל-`.streamlit/secrets.toml`.")
+        elif not _agent_text.strip():
+            st.warning("⚠️ כתבו בקשה לסוכן.")
+        else:
+            with st.spinner("הסוכן מנתח את הבקשה..."):
+                _params = extract_route_params(_agent_text, _groq_key)
+            if _params.get("error"):
+                st.warning(_params["error"])
+            else:
+                # ממלאים את טופס הניווט הקיים — ה-widgets נוצרים מיד אחר כך וקוראים את הערכים.
+                st.session_state["nav_origin"] = _params["origin"]
+                st.session_state["nav_dest"]   = _params["destination"]
+                if _params["hour"] is not None:
+                    st.session_state["nav_hour"] = _params["hour"]
+                st.session_state["nav_mode"] = (
+                    "🌿 הכי מוצל (מודל ML)" if _params["mode"] == "shaded"
+                    else "⚡ הכי מהיר (OSRM)"
+                )
+                _h = _params["hour"]
+                _ht = (f"{int(_h):02d}:{int(round((_h - int(_h)) * 60)):02d}"
+                       if _h is not None else "שעה נוכחית")
+                _mt = "🌿 מוצל" if _params["mode"] == "shaded" else "⚡ מהיר"
+                st.success(
+                    f"✅ הבנתי — מ**{_params['origin']}** ל**{_params['destination']}**, "
+                    f"שעה {_ht}, מצב {_mt}. בדקו את הטופס ולחצו \"מצא מסלול\"."
+                )
+    st.divider()
+
     route_mode = st.radio(
         "סוג מסלול",
         ["🌿 הכי מוצל (מודל ML)", "⚡ הכי מהיר (OSRM)"],
         horizontal=True,
         index=0,
+        key="nav_mode",
     )
 
     c1, c2 = st.columns(2)
