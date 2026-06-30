@@ -1,6 +1,7 @@
 # SHADY — Thermal-Comfort Urban Routing System
 
 🌐 **[Live App: shady-smart-navigation.streamlit.app](https://shady-smart-navigation.streamlit.app/)**
+📊 **[M3 Model Validation Report (GitHub Pages)](https://technion-lbs-course.github.io/alyssa-roni/model_checks.html)**
 
 > **One-Liner:** אופטימיזציה של תנועה עירונית להולכי רגל שמתעדפים צל באמצעות שכבות מידע גיאוגרפי ומאגרי מידע חינמיים ברשת.
 
@@ -221,7 +222,7 @@ streamlit run app.py
 
 ### בחינת המודל — דף ויזואלי
 
-**[`outputs_M3/model_checks.html`](outputs_M3/model_checks.html)** — דף אינטראקטיבי הבוחן את המודל לפי 5 שאלות מפתח:
+**[🔗 Model Validation Report — GitHub Pages](https://technion-lbs-course.github.io/alyssa-roni/model_checks.html)** — דף אינטראקטיבי הבוחן את המודל לפי 5 שאלות מפתח:
 
 | # | בדיקה | תוצאה |
 |---|-------|--------|
@@ -231,7 +232,7 @@ streamlit run app.py
 | 4 | מדד מתאים לבעיה | ✅ RMSE לרגרסיה רציפה [1, 10] |
 | 5 | ניתוח שגיאות | ✅ MAE=0.063 · max_error=0.722 · slices לפי פיצ'רים |
 
-פתיחה: לחצו פעמיים על הקובץ בסייר הקבצים, או דרך VS Code → Right Click → Open with Live Server.
+פתיחה: [לחצו כאן](https://technion-lbs-course.github.io/alyssa-roni/model_checks.html) לצפייה בדף המעוצב.
 
 
 
