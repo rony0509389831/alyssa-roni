@@ -8,6 +8,7 @@
 from pathlib import Path
 
 import tempfile
+from datetime import datetime, timezone
 
 import folium
 import networkx as nx
@@ -15,6 +16,12 @@ import numpy as np
 import osmnx as ox
 import pandas as pd
 import requests
+
+try:
+    import pysolar.solar as _solar
+    _PYSOLAR = True
+except ImportError:
+    _PYSOLAR = False
 
 # מפנה את cache ה-geocoding לתיקיית הטמפ' של המערכת, לא לתיקיית הפרויקט
 ox.settings.cache_folder = tempfile.gettempdir()
@@ -291,6 +298,101 @@ def compute_shaded_route(
         "duration_min": total_dist / WALK_SPEED_MPM,
         "avg_tci":      float(np.mean(tci_vals)) if tci_vals else None,
     }
+
+
+def sun_position(nav_hour: float, now: datetime = None,
+                 lat: float = 32.08, lon: float = 34.77) -> tuple:
+    """
+    מיקום השמש (גובה°, אזימוט°) לשעה nav_hour בתאריך של `now` (ברירת מחדל: היום).
+
+    nav_hour בשעון מקומי (IDT=UTC+3) — ממיר ל-UTC לפני הקריאה ל-PySolar.
+    אם PySolar לא מותקן — מחזיר ברירת מחדל סבירה (45°, 180°) כמו בקוד הישן.
+    """
+    if not _PYSOLAR:
+        return 45.0, 180.0
+    if now is None:
+        now = datetime.now()
+    hh = int(nav_hour)
+    mm = int(round((nav_hour - hh) * 60))
+    dt_utc = datetime(now.year, now.month, now.day, hh - 3, mm, tzinfo=timezone.utc)
+    alt = float(_solar.get_altitude(lat, lon, dt_utc))
+    az = float(_solar.get_azimuth(lat, lon, dt_utc))
+    return alt, az
+
+
+def plan_route(
+    origin: str,
+    dest: str,
+    *,
+    use_shaded: bool,
+    nav_hour: float,
+    geocode_fn,
+    weather_fn=None,
+    weights_fn=None,
+    has_model: bool = False,
+    graph: nx.MultiDiGraph = None,
+    now: datetime = None,
+) -> dict:
+    """
+    מתזמר מסלול שלם מקלט גולמי — כל לוגיקת הניווט שהייתה ב-app.py, בלי Streamlit.
+
+    הזרימה:
+      1. גאוקודינג של מוצא ויעד (דרך geocode_fn).
+      2. מצב "מהיר" → OSRM ישירות.
+      3. מצב "מוצל" → אם המודל/פיצ'רים חסרים, נפילה למסלול מהיר; אחרת חישוב
+         מיקום השמש לשעה הנבחרת, משקלי TCI (דרך weights_fn) ו-Dijkstra מוצל.
+         אם המשקלים לא זמינים → נפילה למסלול מהיר.
+
+    Dependency injection: geocode_fn / weather_fn / weights_fn מוזרקים מבחוץ כדי
+    שה-caching של Streamlit יישאר ב-app.py — המודול הזה נשאר נקי מ-Streamlit.
+
+    מחזיר dict:
+      route_result — תוצאת המסלול (route_latlon, distance_m, duration_min, avg_tci?)
+      color        — צבע לציור (ירוק=מוצל, כחול=מהיר)
+      mode         — "shaded" / "fast" בפועל (אחרי fallbacks)
+      fallback     — None / "model_missing" / "weights_missing" (סיבת נפילה למהיר)
+    """
+    origin_latlon = geocode_fn(origin)
+    dest_latlon = geocode_fn(dest)
+
+    result = {"color": "#2980b9", "mode": "fast", "fallback": None,
+              "origin_latlon": origin_latlon, "dest_latlon": dest_latlon}
+
+    if not use_shaded:
+        result["route_result"] = compute_route(origin_latlon, dest_latlon)
+        return result
+
+    # מצב מוצל — דורש מודל + פיצ'רים זמינים
+    if not has_model:
+        result["route_result"] = compute_route(origin_latlon, dest_latlon)
+        result["fallback"] = "model_missing"
+        return result
+
+    weather = weather_fn() if weather_fn is not None else {
+        "cloud_cover": 30.0, "temperature": 27.0, "humidity": 65.0}
+    sun_alt, sun_az = sun_position(nav_hour, now=now)
+
+    # עיגול לצורך cache — RF מחושב פעם אחת לכל תנאי מזג אוויר
+    alt_r = round(sun_alt / 5) * 5
+    az_r = round(sun_az / 10) * 10
+    cloud_r = round(weather["cloud_cover"] / 10) * 10
+    temp_r = round(weather["temperature"] / 5) * 5
+    hum_r = round(weather["humidity"] / 10) * 10
+
+    wdict, tci_uv = (None, None)
+    if weights_fn is not None:
+        wdict, tci_uv = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r)
+
+    if wdict is None:
+        result["route_result"] = compute_route(origin_latlon, dest_latlon)
+        result["fallback"] = "weights_missing"
+        return result
+
+    result["route_result"] = compute_shaded_route(
+        origin_latlon, dest_latlon, wdict, tci_uv, G=graph)
+    result["color"] = "#27ae60"
+    result["mode"] = "shaded"
+    return result
 
 
 def build_route_map(

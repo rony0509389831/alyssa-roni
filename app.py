@@ -28,9 +28,8 @@ except ImportError:
 
 try:
     from src.routing import (
-        geocode_address, compute_route,
-        compute_tci_weights, compute_shaded_route,
-        build_route_map,
+        geocode_address, compute_tci_weights,
+        build_route_map, plan_route,
     )
     _ROUTING = True
 except ImportError:
@@ -2030,71 +2029,41 @@ with tab_nav:
             st.warning("⚠️ יש להזין גם נקודת מוצא וגם יעד.")
         else:
             _use_shaded  = route_mode.startswith("🌿")
-            _route_color = "#27ae60" if _use_shaded else "#2980b9"
             _spinner_msg = "מחשב מסלול מוצל..." if _use_shaded else "מחשב מסלול..."
 
             with st.spinner(_spinner_msg):
-                error_msg     = None
-                route_result  = None
-                origin_latlon = None
-                dest_latlon   = None
+                error_msg = None
+                plan      = None
                 try:
-                    origin_latlon = _geocode_cached(origin_input)
-                    dest_latlon   = _geocode_cached(dest_input)
-
-                    if _use_shaded:
-                        _bundle   = load_tci_model()
-                        _edges_df = load_edges_full()
-                        if _bundle is None or _edges_df is None:
-                            st.warning("⚠️ מודל ML או קובץ פיצ'רים לא זמין — עובר למסלול מהיר.")
-                            route_result = compute_route(origin_latlon, dest_latlon)
-                            _route_color = "#2980b9"
-                        else:
-                            # מזג אוויר ושמש
-                            _nav_w = _get_weather_cached()
-                            if _PYSOLAR:
-                                from datetime import datetime as _dt, timezone as _tz
-                                # שמש אמיתית לתאריך של היום, בשעה שנבחרה (IDT=UTC+3).
-                                # רק המבנים (shadow_cov) מיוחסים ליום קיץ — דרך snap למצב-השמש
-                                # הקרוב ב-compute_tci_weights. השמש והמזג-אוויר נשארים אמיתיים.
-                                _td = _dt.now()
-                                _hh = int(_nav_hour); _mm = int(round((_nav_hour - _hh) * 60))
-                                _dt_nav = _dt(_td.year, _td.month, _td.day, _hh - 3, _mm, tzinfo=_tz.utc)
-                                _nav_sun_alt = float(_solar.get_altitude(32.08, 34.77, _dt_nav))
-                                _nav_sun_az  = float(_solar.get_azimuth(32.08, 34.77, _dt_nav))
-                            else:
-                                _nav_sun_alt, _nav_sun_az = 45.0, 180.0
-
-                            # עיגול לצורך cache — RF מחושב פעם אחת לכל תנאי מזג אוויר
-                            _alt_r   = round(_nav_sun_alt / 5) * 5
-                            _az_r    = round(_nav_sun_az  / 10) * 10
-                            _cloud_r = round(_nav_w["cloud_cover"] / 10) * 10
-                            _temp_r  = round(_nav_w["temperature"] / 5) * 5
-                            _hum_r   = round(_nav_w["humidity"]    / 10) * 10
-
-                            _wdict, _tci_uv = _precompute_nav_weights(
-                                _alt_r, _az_r, _cloud_r, _temp_r, _hum_r
-                            )
-                            if _wdict is None:
-                                route_result = compute_route(origin_latlon, dest_latlon)
-                                _route_color = "#2980b9"
-                            else:
-                                route_result = compute_shaded_route(
-                                    origin_latlon, dest_latlon,
-                                    _wdict, _tci_uv,
-                                    G=_nav_G,
-                                )
-                    else:
-                        route_result = compute_route(origin_latlon, dest_latlon)
-
+                    # כל לוגיקת הניווט עברה ל-src.routing.plan_route. כאן רק מזריקים
+                    # את עוטפי ה-cache של Streamlit (geocode/weather/weights) וקוראים.
+                    _bundle   = load_tci_model() if _use_shaded else None
+                    _edges_df = load_edges_full() if _use_shaded else None
+                    plan = plan_route(
+                        origin_input, dest_input,
+                        use_shaded=_use_shaded,
+                        nav_hour=_nav_hour,
+                        geocode_fn=_geocode_cached,
+                        weather_fn=_get_weather_cached,
+                        weights_fn=_precompute_nav_weights,
+                        has_model=(_bundle is not None and _edges_df is not None),
+                        graph=_nav_G,
+                    )
                 except ValueError as e:
                     error_msg = f"❌ {e}"
                 except Exception as e:
                     error_msg = f"❌ שגיאה: {e}"
 
+            if plan is not None and plan["fallback"] == "model_missing":
+                st.warning("⚠️ מודל ML או קובץ פיצ'רים לא זמין — עובר למסלול מהיר.")
+
             if error_msg:
                 st.error(error_msg)
             else:
+                route_result  = plan["route_result"]
+                _route_color  = plan["color"]
+                origin_latlon = plan["origin_latlon"]
+                dest_latlon   = plan["dest_latlon"]
                 _avg_tci = route_result.get("avg_tci")
                 _n_cols  = 3 if _avg_tci is not None else 2
                 _mc      = st.columns(_n_cols)
