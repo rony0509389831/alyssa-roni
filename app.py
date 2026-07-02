@@ -28,12 +28,19 @@ except ImportError:
 
 try:
     from src.routing import (
-        geocode_address, compute_tci_weights,
-        build_route_map, plan_route,
+        geocode_address, compute_tci_weights, compute_route,
+        build_route_map, plan_route, load_shadow_coverage,
     )
     _ROUTING = True
 except ImportError:
     _ROUTING = False
+    @st.cache_data
+    def load_shadow_coverage():
+        from pathlib import Path as _PF
+        p = _PF("data/shadow_coverage.parquet")
+        if not p.exists():
+            return None
+        return pd.read_parquet(p)
 
 # M4 — סוכן LLM לחילוץ פרמטרי ניווט מטקסט חופשי (ייבוא groq עצל בתוך הפונקציה)
 try:
@@ -157,6 +164,18 @@ if _ROUTING:
     def _geocode_cached(address: str) -> tuple:
         return geocode_address(address)
 
+    def _validate_address_field(addr_key: str, ok_key: str, err_key: str) -> None:
+        """on_change callback — מגאוקד את הכתובת ושומר תוצאה ב-session_state."""
+        addr = st.session_state.get(addr_key, "").strip()
+        st.session_state.pop(ok_key, None)
+        st.session_state.pop(err_key, None)
+        if not addr:
+            return
+        try:
+            st.session_state[ok_key] = _geocode_cached(addr)
+        except ValueError as e:
+            st.session_state[err_key] = str(e)
+
 # ── מדגם שכונת הצפון הישן (למפה בלבד) ────────────────────────────────────────
 _ON_LAT_MIN, _ON_LAT_MAX = 32.076, 32.100
 _ON_LON_MIN, _ON_LON_MAX = 34.762, 34.783
@@ -238,10 +257,11 @@ def _load_nav_graph():
 def _precompute_nav_weights(
     sun_alt_r: float, sun_az_r: float,
     cloud_r: float, temp_r: float, hum_r: float,
+    shade_factor: float = 1.0,
 ):
     """
     מחשב TCI ל-58k קשתות ומחזיר (weight_dict, tci_by_uv).
-    ממוטמן לפי פרמטרי מזג אוויר מעוגלים — אותם תנאים → cache hit (0ms).
+    ממוטמן לפי פרמטרי מזג אוויר מעוגלים + shade_factor — אותם תנאים → cache hit (0ms).
     """
     _bundle   = load_tci_model()
     _edges_df = load_edges_full()
@@ -251,6 +271,7 @@ def _precompute_nav_weights(
         _edges_df, _bundle,
         float(sun_alt_r), float(sun_az_r),
         float(cloud_r), float(temp_r), float(hum_r),
+        shade_factor=float(shade_factor),
     )
 
 
@@ -267,82 +288,6 @@ def load_rothschild_edges():
     if len(s) == 0:
         s = ef.cx[34.774:34.800, 32.083:32.102].copy()   # fallback: הצפון הישן
     return s
-
-
-@st.cache_data
-def load_shadow_coverage():
-    """טבלת כיסוי-צל מבנים מראש (precompute_shadow.py): u,v,key + עמודה לכל שעה."""
-    from pathlib import Path as _PF
-    p = _PF("data/shadow_coverage.parquet")
-    if not p.exists():
-        return None
-    return pd.read_parquet(p)
-
-
-@st.cache_data
-def _load_area_building_centroids():
-    """צנטרואידי מבנים (ITM x,y,height) באזור רוטשילד+שוליים — לחישוב הצללה כיוונית."""
-    import geopandas as _gpd
-    import pandas as _pd
-    from pathlib import Path as _PF
-    p = _PF("data/buildings_clean.csv")
-    if not p.exists():
-        return None
-    b = _pd.read_csv(p)
-    b = b[b["lon"].between(34.758, 34.796) & b["lat"].between(32.050, 32.080)]
-    b = b[b["height"].notna() & (b["height"] > 0)]
-    if len(b) == 0:
-        return None
-    g = _gpd.GeoDataFrame(
-        b[["height"]], geometry=_gpd.points_from_xy(b["lon"], b["lat"]), crs="EPSG:4326",
-    ).to_crs("EPSG:2039")
-    return np.c_[g.geometry.x.values, g.geometry.y.values, g["height"].values]
-
-
-@st.cache_data(show_spinner=False)
-def _directional_building_heights(hour: float):
-    """
-    הצללה כיוונית: לכל קשת רוטשילד — גובה המבנה המצל הגבוה ביותר בלבד
-    (מבנה בצד השמש ובטווח צל h/tan(altitude)), לשעת אחה"צ נתונה.
-
-    מחזיר np.array בסדר של load_rothschild_edges(), או None אם חסרים נתונים.
-    ממוטמן לפי שעה — שעה חוזרת = 0ms.
-    """
-    ef = load_rothschild_edges()
-    B = _load_area_building_centroids()
-    if ef is None or B is None or not _PYSOLAR:
-        return None
-    try:
-        from scipy.spatial import cKDTree
-    except ImportError:
-        return None
-
-    cents = ef.to_crs("EPSG:2039").geometry.centroid
-    EXY = np.c_[cents.x.values, cents.y.values]
-
-    _h = int(hour); _mn = int(round((hour - _h) * 60))
-    _dt = datetime(2024, 8, 15, _h - 3, _mn, tzinfo=timezone.utc)  # IDT=UTC+3
-    alt = max(float(_solar.get_altitude(32.08, 34.77, _dt)), 3.0)
-    az = float(_solar.get_azimuth(32.08, 34.77, _dt))
-    s_vec = np.array([np.sin(np.radians(az)), np.cos(np.radians(az))])  # כיוון לשמש (E,N)
-
-    BXY, BH = B[:, :2], B[:, 2]
-    tan_a = np.tan(np.radians(alt))
-    tree = cKDTree(BXY)
-    R = min(float(BH.max()) / tan_a, 200.0)               # רדיוס חיפוש = טווח צל מקסימלי
-    nbrs = tree.query_ball_point(EXY, r=R)
-    counts = np.fromiter((len(x) for x in nbrs), dtype=int, count=len(nbrs))
-    h_dir = np.zeros(len(EXY))
-    if counts.sum() > 0:
-        e_ids = np.repeat(np.arange(len(EXY)), counts)
-        b_ids = np.fromiter((i for x in nbrs for i in x), dtype=int, count=int(counts.sum()))
-        rel = BXY[b_ids] - EXY[e_ids]
-        along = rel @ s_vec                                # מרכיב לכיוון השמש (>0 = בצד השמש)
-        lateral = np.abs(rel - along[:, None] * s_vec).sum(axis=1)
-        reach = BH[b_ids] / tan_a                          # טווח הצל של כל מבנה לפי גובהו
-        m = (along > 0) & (along <= reach) & (lateral < 25.0)
-        np.maximum.at(h_dir, e_ids[m], BH[b_ids][m])       # המבנה המצל הגבוה ביותר לכל קשת
-    return h_dir
 
 
 # ── טעינה מוקדמת של גרף הרחובות ──────────────────────────────────────────────
@@ -1525,19 +1470,15 @@ with tab_eda:
 <b>TCI = ציון 1–10 לכל מקטע רחוב (edge) בגרף OSMnx</b><br>
 <span style="color:#27ae60;font-weight:600;">1 = מוצל/נוח</span> &nbsp;|&nbsp; <span style="color:#e74c3c;font-weight:600;">10 = חשיפה מלאה לשמש</span>
 <br><br>
-<b>נוסחה אנליטית (MVP — לפני ML):</b><br>
+<b>נוסחה אנליטית:</b><br>
 <code style="background:#dbeafe;padding:6px 10px;border-radius:4px;font-size:14px;display:inline-block;margin:6px 0;">
-TCI = clip( 1 + 9 &times; (sun_altitude/80) &times; (1 &minus; cloud_cover) &times; (1 &minus; 0.6&times;Tree_Factor &minus; 0.4&times;Building_Factor), &nbsp;1, 10 )
-</code>
-<br>
-<code style="background:#dbeafe;padding:4px 10px;border-radius:4px;font-size:13px;display:inline-block;margin:2px 0;">
-Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = clip(height/30, 0, 1) &times; cos(sun_altitude_rad) &times; sin(shadow_angle_rad)
+TCI = clip( 1 + 9 &times; (sun_altitude/80) &times; (1 &minus; cloud_cover/100) &times; (1 &minus; 0.6&times;canopy_ratio &minus; 0.4&times;shadow_cov), &nbsp;1, 10 )
 </code>
 <br><br>
 <b>פירוש הגורמים:</b>
 שמש גבוהה → (alt/80) קרוב ל-1 → TCI עולה (חם) ·
-עצים → tree_canopy_ratio גבוה → TCI יורד (w₁=0.6) ·
-מבנים → שמש נמוכה → cos גדול → Building_Factor גדול → TCI יורד (w₂=0.4)
+עצים → canopy_ratio גבוה → TCI יורד (w₁=0.6) ·
+צל מבנים → shadow_cov גבוה → TCI יורד (w₂=0.4) — shadow_cov = אחוז הקשת המכוסה בצל (מחושב מראש)
 <br><br>
 <b>בחירת KPI:</b> יעד רציף (1–10) → <b>רגרסיה</b> → מדד: <b>RMSE</b>
 (טעות גדולה = הולכי רגל ברחוב שמשי במקום מוצל — עונש גבוה יותר מ-MAE)
@@ -1555,7 +1496,7 @@ Tree_Factor = tree_canopy_ratio &nbsp;&nbsp;·&nbsp;&nbsp; Building_Factor = cli
         ("temperature",          "Open-Meteo", "13–28°C", "↑ עולה — חום מגביר אי-נוחות",   "#e74c3c"),
         ("cloud_cover",          "Open-Meteo", "0–50%",   "↓ יורד — עננות מסננת קרינה",    "#27ae60"),
         ("humidity",             "Open-Meteo", "65–80%",  "↑ קל — לחות מגבירה תחושת חום",  "#e67e22"),
-        ("shadow_angle",          "PySolar+OSM", "0°–90°",  "↓ יורד — שמש ניצבת לרחוב = צל", "#27ae60"),
+        ("shadow_cov",            "precompute_shadow.py", "0–1", "↓ יורד — כיסוי-צל מבנים גדול = TCI נמוך", "#27ae60"),
     ]
     _feat_rows_html = ""
     for _fi, (_fname, _fsrc, _frng, _feff, _fcol) in enumerate(_feat_data):
@@ -1963,6 +1904,8 @@ with tab_map:
             sun_layer.add_to(_m)
 
         folium.LayerControl(collapsed=False).add_to(_m)
+        for _old_key in [k for k in st.session_state if k.startswith("tab_map_") and k != _map_key]:
+            del st.session_state[_old_key]
         st.session_state[_map_key] = _m
 
     _map = st.session_state[_map_key]
@@ -2014,28 +1957,18 @@ with tab_nav:
                 st.session_state["nav_origin"] = _params["origin"]
                 st.session_state["nav_dest"]   = _params["destination"]
                 if _params["hour"] is not None:
-                    st.session_state["nav_hour"] = _params["hour"]
-                st.session_state["nav_mode"] = (
-                    "🌿 הכי מוצל (מודל ML)" if _params["mode"] == "shaded"
-                    else "⚡ הכי מהיר (OSRM)"
-                )
+                    _ah = int(_params["hour"])
+                    _am = int(round((_params["hour"] - _ah) * 60))
+                    from datetime import time as _time_cls
+                    st.session_state["nav_time"] = _time_cls(min(_ah, 23), min(_am, 59))
                 _h = _params["hour"]
                 _ht = (f"{int(_h):02d}:{int(round((_h - int(_h)) * 60)):02d}"
                        if _h is not None else "שעה נוכחית")
-                _mt = "🌿 מוצל" if _params["mode"] == "shaded" else "⚡ מהיר"
                 st.success(
                     f"✅ הבנתי — מ**{_params['origin']}** ל**{_params['destination']}**, "
-                    f"שעה {_ht}, מצב {_mt}. בדקו את הטופס ולחצו \"מצא מסלול\"."
+                    f"שעה {_ht}. בדקו את הטופס ולחצו \"מצא מסלול\"."
                 )
     st.divider()
-
-    route_mode = st.radio(
-        "סוג מסלול",
-        ["🌿 הכי מוצל (מודל ML)", "⚡ הכי מהיר (OSRM)"],
-        horizontal=True,
-        index=0,
-        key="nav_mode",
-    )
 
     c1, c2 = st.columns(2)
     with c1:
@@ -2043,34 +1976,96 @@ with tab_nav:
             "📍 נקודת מוצא",
             placeholder="לדוגמה: כיכר רבין, תל אביב",
             key="nav_origin",
+            on_change=_validate_address_field,
+            args=("nav_origin", "_origin_ok", "_origin_err"),
         )
+        if "_origin_ok" in st.session_state:
+            st.success("✅ מיקום זוהה")
+        elif "_origin_err" in st.session_state:
+            st.error(st.session_state["_origin_err"])
     with c2:
         dest_input = st.text_input(
             "🏁 יעד",
             placeholder="לדוגמה: שוק הכרמל, תל אביב",
             key="nav_dest",
+            on_change=_validate_address_field,
+            args=("nav_dest", "_dest_ok", "_dest_err"),
         )
+        if "_dest_ok" in st.session_state:
+            st.success("✅ מיקום זוהה")
+        elif "_dest_err" in st.session_state:
+            st.error(st.session_state["_dest_err"])
 
-    # בורר שעת יציאה (יום קיץ ייחוס) — קובע את מיקום השמש להצללה במצב "מוצל".
-    # ברירת מחדל = השעה הנוכחית (מוצמדת ל-6:00–19:00). הזזה מאפשרת הדגמה בכל שעה.
-    from datetime import datetime as _dtnow
-    _now_local = _dtnow.now()
-    _default_nav_hour = float(min(max(round((_now_local.hour + _now_local.minute / 60) * 2) / 2, 6.0), 19.0))
-    _nav_hour = st.slider(
-        "🕐 שעת יציאה היום (6:00→19:00) — משפיעה על מיקום השמש במסלול המוצל",
-        min_value=6.0, max_value=19.0, value=_default_nav_hour, step=0.5, key="nav_hour",
-    )
-    # כיתוב: השעה המדויקת + מיקום השמש שייגזר ממנה (תאריך היום)
-    _nh = int(_nav_hour); _nm = int(round((_nav_hour - _nh) * 60))
+    # תיקון RTL בלוח שנה של Streamlit — Baseweb מסדר תאים לפי RTL, הימים מתהפכים
+    st.markdown("""
+<style>
+div[data-baseweb="calendar"]          { direction: ltr !important; }
+div[data-baseweb="calendar"] table    { direction: ltr !important; }
+div[data-baseweb="calendar"] thead th { direction: ltr !important; }
+div[data-baseweb="calendar"] td       { direction: ltr !important; }
+</style>
+""", unsafe_allow_html=True)
+
+    # בחירת תאריך ושעת יציאה — ברירת מחדל = עכשיו, טווח = 7 ימים קדימה.
+    from datetime import date as _date, timedelta as _td, time as _time
+    _today     = _date.today()
+    _now_local = datetime.now()
+    _clamp_h   = min(max(_now_local.hour, 6), 18)
+    _clamp_m   = 30 if _now_local.minute >= 30 else 0
+    _default_time = _time(_clamp_h, _clamp_m)
+
+    _dcol, _tcol, _rcol = st.columns([3, 3, 1])
+    with _dcol:
+        nav_date = st.date_input(
+            "📅 תאריך יציאה",
+            value=_today,
+            min_value=_today,
+            max_value=_today + _td(days=7),
+            key="nav_date",
+        )
+    with _tcol:
+        nav_time = st.time_input(
+            "⏰ שעת יציאה",
+            value=_default_time,
+            step=1800,
+            key="nav_time",
+        )
+    with _rcol:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🔄", key="nav_reset", help="איפוס לשעה ותאריך נוכחיים"):
+            _now_r = datetime.now()
+            _h_r   = min(max(_now_r.hour, 6), 18)
+            _m_r   = 30 if _now_r.minute >= 30 else 0
+            from datetime import date as _d2, time as _t2
+            st.session_state["nav_date"] = _d2.today()
+            st.session_state["nav_time"] = _t2(_h_r, _m_r)
+            st.rerun()
+
+    _nav_hour = nav_time.hour + nav_time.minute / 60.0
+    _nav_now  = datetime(nav_date.year, nav_date.month, nav_date.day)
+    _nh = nav_time.hour; _nm = nav_time.minute
     if _PYSOLAR:
-        from datetime import datetime as _d2, timezone as _t2
-        _td2 = _d2.now()
-        _dtc = _d2(_td2.year, _td2.month, _td2.day, _nh - 3, _nm, tzinfo=_t2.utc)
+        from zoneinfo import ZoneInfo as _ZI
+        _dtc = datetime(nav_date.year, nav_date.month, nav_date.day,
+                        _nh, _nm, tzinfo=_ZI("Asia/Jerusalem"))
         _ca = float(_solar.get_altitude(32.08, 34.77, _dtc))
         _cz = float(_solar.get_azimuth(32.08, 34.77, _dtc))
-        st.caption(f"🕐 {_nh:02d}:{_nm:02d} · שמש: גובה {_ca:.0f}° · אזימוט {_cz:.0f}° · מזג אוויר נמשך לעכשיו")
+        st.caption(f"🕐 {_nh:02d}:{_nm:02d} · שמש: גובה {_ca:.0f}° · אזימוט {_cz:.0f}°")
     else:
+        _ca = 45.0
         st.caption(f"🕐 {_nh:02d}:{_nm:02d}")
+
+    shade_pref = st.slider(
+        "🌿 נכונות לסטות מהמסלול הקצר",
+        min_value=1.0, max_value=3.0, value=1.0, step=0.5,
+        key="nav_shade_pref",
+        help="ערך גבוה = הראוטר יסכים לדרך ארוכה יותר בשביל צל; 1.0 = ברירת מחדל (מאוזן)",
+        format="%.1f",
+    )
+
+    compare_fast = st.checkbox("🔀 הצג גם מסלול מהיר להשוואה", key="nav_compare")
+    if _ca <= 0:
+        st.info("🌙 חשוך בחוץ — יוצג מסלול מהיר (אין ניגודיות צל בלילה).")
 
     find_btn = st.button("מצא מסלול 🗺️", type="primary")
     st.divider()
@@ -2078,59 +2073,109 @@ with tab_nav:
     if find_btn:
         if not origin_input.strip() or not dest_input.strip():
             st.warning("⚠️ יש להזין גם נקודת מוצא וגם יעד.")
+        elif "_origin_ok" not in st.session_state or "_dest_ok" not in st.session_state:
+            st.warning("⚠️ יש לוודא שהכתובות זוהו (✅) לפני חישוב המסלול.")
         else:
-            _use_shaded  = route_mode.startswith("🌿")
-            _spinner_msg = "מחשב מסלול מוצל..." if _use_shaded else "מחשב מסלול..."
-
-            with st.spinner(_spinner_msg):
+            with st.spinner("מחשב מסלול מוצל..."):
                 error_msg = None
                 plan      = None
                 try:
-                    # כל לוגיקת הניווט עברה ל-src.routing.plan_route. כאן רק מזריקים
-                    # את עוטפי ה-cache של Streamlit (geocode/weather/weights) וקוראים.
-                    _bundle   = load_tci_model() if _use_shaded else None
-                    _edges_df = load_edges_full() if _use_shaded else None
+                    _bundle   = load_tci_model()
+                    _edges_df = load_edges_full()
                     plan = plan_route(
                         origin_input, dest_input,
-                        use_shaded=_use_shaded,
+                        use_shaded=True,
                         nav_hour=_nav_hour,
                         geocode_fn=_geocode_cached,
                         weather_fn=_get_weather_cached,
                         weights_fn=_precompute_nav_weights,
                         has_model=(_bundle is not None and _edges_df is not None),
                         graph=_nav_G,
+                        now=_nav_now,
+                        shade_factor=float(shade_pref),
                     )
                 except ValueError as e:
                     error_msg = f"❌ {e}"
                 except Exception as e:
                     error_msg = f"❌ שגיאה: {e}"
 
-            if plan is not None and plan["fallback"] == "model_missing":
-                st.warning("⚠️ מודל ML או קובץ פיצ'רים לא זמין — עובר למסלול מהיר.")
+            _FALLBACK_MSGS = {
+                "model_missing":   "⚠️ מודל ML לא זמין — מציג מסלול מהיר.",
+                "weights_missing": "⚠️ משקלי TCI לא זמינים — מציג מסלול מהיר.",
+                "night":           "🌙 חשוך בחוץ — מציג מסלול מהיר (אין צל בלילה).",
+                "overcast":        "☁️ מעונן מאוד (>80%) — מציג מסלול מהיר (הצל פחות רלוונטי).",
+            }
+            if plan is not None and plan["fallback"] in _FALLBACK_MSGS:
+                st.info(_FALLBACK_MSGS[plan["fallback"]])
 
             if error_msg:
                 st.error(error_msg)
-            else:
+            elif plan is not None:
                 route_result  = plan["route_result"]
                 _route_color  = plan["color"]
                 origin_latlon = plan["origin_latlon"]
                 dest_latlon   = plan["dest_latlon"]
-                _avg_tci = route_result.get("avg_tci")
-                _n_cols  = 3 if _avg_tci is not None else 2
-                _mc      = st.columns(_n_cols)
-                _mc[0].metric("📏 מרחק", f"{route_result['distance_m']:.0f} מ'")
-                _mc[1].metric("⏱️ זמן הליכה משוער", f"{route_result['duration_min']:.0f} דקות")
-                if _avg_tci is not None:
-                    _mc[2].metric("☀️ חשיפה ממוצעת לשמש", f"{_avg_tci:.1f} / 10",
-                                  help="🟢 TCI 1 = מוצל לחלוטין  \n🔴 TCI 10 = חשיפה מלאה לשמש")
-                route_map = build_route_map(origin_latlon, dest_latlon, route_result,
-                                            color=_route_color)
+                _avg_tci      = route_result.get("avg_tci")
+
+                # מסלול מהיר להשוואה — נחשב רק אם המשתמש ביקש ויש מסלול מוצל אמיתי
+                _fast_result = None
+                if compare_fast and plan["mode"] == "shaded":
+                    with st.spinner("מחשב מסלול מהיר להשוואה..."):
+                        try:
+                            _fast_result = compute_route(origin_latlon, dest_latlon)
+                        except Exception:
+                            st.warning("⚠️ לא הצלחתי לחשב מסלול מהיר להשוואה.")
+
+                # תצוגת מדדים: עמודות כפולות כשיש השוואה, רגיל אחרת
+                if _fast_result:
+                    _mc_s, _mc_f = st.columns(2)
+                    with _mc_s:
+                        st.markdown("**🌿 מסלול מוצל**")
+                        st.metric("📏 מרחק", f"{route_result['distance_m']:.0f} מ'")
+                        st.metric("⏱️ זמן הליכה", f"{route_result['duration_min']:.0f} דקות")
+                        if _avg_tci is not None:
+                            st.metric("☀️ TCI ממוצע", f"{_avg_tci:.1f} / 10",
+                                      help="🟢 TCI 1 = מוצל לחלוטין  \n🔴 TCI 10 = חשיפה מלאה")
+                    with _mc_f:
+                        st.markdown("**⚡ מסלול מהיר**")
+                        st.metric("📏 מרחק", f"{_fast_result['distance_m']:.0f} מ'")
+                        st.metric("⏱️ זמן הליכה", f"{_fast_result['duration_min']:.0f} דקות")
+                else:
+                    _n_cols = 3 if _avg_tci is not None else 2
+                    _mc = st.columns(_n_cols)
+                    _mc[0].metric("📏 מרחק", f"{route_result['distance_m']:.0f} מ'")
+                    _mc[1].metric("⏱️ זמן הליכה משוער", f"{route_result['duration_min']:.0f} דקות")
+                    if _avg_tci is not None:
+                        _mc[2].metric("☀️ חשיפה ממוצעת לשמש", f"{_avg_tci:.1f} / 10",
+                                      help="🟢 TCI 1 = מוצל לחלוטין  \n🔴 TCI 10 = חשיפה מלאה לשמש")
+
+                route_map = build_route_map(
+                    origin_latlon, dest_latlon, route_result,
+                    color=_route_color,
+                    tci_list=route_result.get("tci_list"),
+                    fast_result=_fast_result,
+                )
                 st_folium(route_map, height=520, width=1100, returned_objects=[])
     else:
-        _empty_map = folium.Map(
-            location=[32.0853, 34.7818], zoom_start=13, tiles="CartoDB positron"
-        )
-        st_folium(_empty_map, height=520, width=1100, returned_objects=[])
+        _preview = folium.Map(location=[32.0853, 34.7818], zoom_start=13,
+                              tiles="CartoDB positron")
+        _pts = []
+        if "_origin_ok" in st.session_state:
+            _p = st.session_state["_origin_ok"]
+            folium.Marker(_p, icon=folium.Icon(color="green", icon="play", prefix="fa"),
+                          tooltip="נקודת מוצא").add_to(_preview)
+            _pts.append(_p)
+        if "_dest_ok" in st.session_state:
+            _p = st.session_state["_dest_ok"]
+            folium.Marker(_p, icon=folium.Icon(color="red", icon="flag", prefix="fa"),
+                          tooltip="יעד").add_to(_preview)
+            _pts.append(_p)
+        if len(_pts) == 2:
+            _lats = [p[0] for p in _pts]
+            _lons = [p[1] for p in _pts]
+            _preview.fit_bounds([[min(_lats) - 0.005, min(_lons) - 0.005],
+                                  [max(_lats) + 0.005, max(_lons) + 0.005]])
+        st_folium(_preview, height=520, width=1100, returned_objects=[])
 
     st.caption("ניווט מבוסס: OSMnx · Nominatim · NetworkX Dijkstra · RandomForest TCI")
 
@@ -2407,6 +2452,6 @@ with tab_about:
             | `cloud_cover` | כיסוי עננים (%) |
             | `temperature` | טמפרטורה (°C) — פרוקסי ל-cloud_cover |
             | `humidity` | לחות יחסית (%) |
-            | `shadow_angle` | זווית שמש-רחוב (0°=מקביל→אין צל, 90°=ניצב→צל מקסימלי) |
+            | `shadow_cov` | כיסוי-צל מבנים [0–1] — אחוז הקשת המכוסה בצל (מחושב מראש) |
             """
         )

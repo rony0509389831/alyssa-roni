@@ -107,20 +107,20 @@ def build_models() -> dict:
     }
 
 
-def train_and_evaluate(X_train, X_test, y_train, y_test,
+def train_and_evaluate(X_train, y_train,
                         X_val=None, y_val=None) -> dict:
     """
     שלב 6: מאמן כל מודל על train.
 
     אם X_val/y_val מסופקים — מוסיף "rmse_val" לכל מודל.
-    select_winner() ישתמש ב-rmse_val לבחירה (test נשאר נקי).
+    select_winner() ישתמש ב-rmse_val לבחירה; test נגיעה אחת בסוף בלבד (ב-__main__).
 
-    מחזיר: {name: {"rmse", "r2", "model", ["rmse_val"]}}
+    מחזיר: {name: {"model", ["rmse_val"]}}
     """
     results = {}
     for name, model in build_models().items():
         model.fit(X_train, y_train)
-        metrics = evaluate(y_test, model.predict(X_test))
+        metrics: dict = {}
         if X_val is not None:
             metrics["rmse_val"] = evaluate(y_val, model.predict(X_val))["rmse"]
         metrics["model"] = model
@@ -138,13 +138,12 @@ def forest_importances(model, feature_cols=FEATURE_COLS):
 
 def select_winner(results: dict):
     """
-    שלב 7: בוחר את המודל עם ה-RMSE הנמוך ביותר.
+    שלב 7: בוחר את המודל עם ה-rmse_val הנמוך ביותר.
 
-    משתמש ב-rmse_val אם קיים (val ניטרלי לבחירה) — אחרת נופל על rmse_test.
+    מניח ש-train_and_evaluate הורץ עם X_val/y_val (rmse_val תמיד קיים).
     מחזיר (name, metrics).
     """
-    sort_key = "rmse_val" if "rmse_val" in next(iter(results.values())) else "rmse"
-    name = min(results, key=lambda k: results[k][sort_key])
+    name = min(results, key=lambda k: results[k].get("rmse_val", results[k].get("rmse", float("inf"))))
     return name, results[name]
 
 
@@ -242,19 +241,22 @@ if __name__ == "__main__":
     floor = baselines["mean"]["rmse"]
     print(f"\nהרצפה: RMSE={floor:.3f} (mean) — כל מודל אמיתי צריך לנצח אותה.\n")
 
-    # ── שלבים 6+7: אימון עם val לבחירה, test לדיווח ────────────────────────────
-    models = train_and_evaluate(X_train, X_test, y_train, y_test, X_val, y_val)
+    # ── שלבים 6+7: אימון עם val לבחירה — test נגיעה אחת בסוף בלבד ──────────────
+    models = train_and_evaluate(X_train, y_train, X_val, y_val)
 
-    print("=== Step 7: comparison — RMSE_val (choice) / RMSE_test / R² ===")
-    print(f"{'model':<20}{'RMSE_val':>12}{'RMSE_test':>12}{'R2_test':>10}")
-    print(f"{'baseline (mean)':<20}{'—':>12}{floor:>12.3f}{baselines['mean']['r2']:>10.4f}")
+    print("=== Step 7: comparison — RMSE_val (choice) ===")
+    print(f"{'model':<20}{'RMSE_val':>12}")
+    print(f"{'baseline (mean)':<20}{'—':>12}")
     for name, m in models.items():
         rv = f"{m['rmse_val']:.3f}" if "rmse_val" in m else "—"
-        print(f"{name:<20}{rv:>12}{m['rmse']:>12.3f}{m['r2']:>10.4f}")
+        print(f"{name:<20}{rv:>12}")
 
     winner, wm = select_winner(models)
-    chosen_by = "VAL" if "rmse_val" in wm else "TEST"
-    print(f"\n🏆 מנצח ({chosen_by}): {winner} — RMSE_test={wm['rmse']:.3f}, R²={wm['r2']:.4f}")
+    # test — נגיעה יחידה, למנצח בלבד
+    _test_m = evaluate(y_test, wm["model"].predict(X_test))
+    wm["rmse"] = _test_m["rmse"]
+    wm["r2"]   = _test_m["r2"]
+    print(f"\n🏆 מנצח (VAL): {winner} — RMSE_test={wm['rmse']:.3f}, R²={wm['r2']:.4f}")
     print(f"   משפר את הרצפה (RMSE={floor:.3f}) פי {floor / wm['rmse']:.1f}.")
 
     imp = forest_importances(models["forest"]["model"])
@@ -295,6 +297,13 @@ if __name__ == "__main__":
         row = "  ".join(f"{q}:{v:.3f}" for q, v in rmse_by_q.items())
         print(f"  {feat:<20} {row}")
 
+    # test metrics לכל המודלים שלא חושבו (רק המנצח חושב בשלב 7)
+    for _, _m in models.items():
+        if "rmse" not in _m:
+            _tm = evaluate(y_test, _m["model"].predict(X_test))
+            _m["rmse"] = _tm["rmse"]
+            _m["r2"] = _tm["r2"]
+
     # ── JSON לסטרימליט (טאב אודות) ──────────────────────────────────────────────
     _summary = {
         "rows": {
@@ -308,8 +317,8 @@ if __name__ == "__main__":
               "rmse_val": None, "r2": round(baselines["mean"]["r2"], 4)}]
             + [{"model": n,
                 "rmse_val": round(m["rmse_val"], 3) if "rmse_val" in m else None,
-                "rmse": round(m["rmse"], 3),
-                "r2": round(m["r2"], 4)}
+                "rmse": round(m["rmse"], 3) if "rmse" in m else None,
+                "r2": round(m["r2"], 4) if "r2" in m else None}
                for n, m in models.items()]
         ),
         "winner": winner,

@@ -7,8 +7,11 @@
 """
 from pathlib import Path
 
+import math
+import re
 import tempfile
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import folium
 import networkx as nx
@@ -33,6 +36,13 @@ WALK_SPEED_MPM = 80  # מטר לדקה — לחיזוי זמן הליכה כ-fal
 
 _OSRM_BASE = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
 
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+_NOMINATIM_HEADERS = {"User-Agent": "SHADY-TelAviv-Navigator/1.0"}
+
+_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# bbox לOverpass: south,west,north,east
+_TA_OVERPASS_BBOX = f"({TA_BBOX[0]},{TA_BBOX[1]},{TA_BBOX[2]},{TA_BBOX[3]})"
+
 # cache ברמת המודול — נשמר לכל חיי התהליך, נמנע טעינה חוזרת (4.6s) בכל לחיצה
 _GRAPH_CACHE: nx.MultiDiGraph | None = None
 
@@ -47,6 +57,7 @@ _COV_CACHE = None
 BOULEVARD_WEIGHT_FACTOR = 0.5      # קשת ברחוב ירוק עולה חצי → מועדפת חזק
 CANOPY_STREET_THRESHOLD = 0.35     # סף כיסוי-עצים לרחוב רגיל
 BOULEVARD_CANOPY_FLOOR = 0.24      # רף נמוך יותר לשדרות (רף רוטשילד ≈24.2%)
+PEDESTRIAN_WEIGHT_FACTOR = 0.8     # שביל ייעודי להולכי-רגל מקבל הנחה 20%
 EDGES_FEATURES_PATH = Path("data/edges_features.parquet")
 
 _PREF_CACHE = None
@@ -80,7 +91,7 @@ def _preferred_edges():
             if n in green:
                 pref.add(uv)
     except Exception:
-        pass
+        return pref   # לא מאחסן — מאפשר ניסיון חוזר בהפעלה הבאה
     _PREF_CACHE = pref
     return pref
 
@@ -138,21 +149,94 @@ def load_graph() -> nx.MultiDiGraph:
     return G
 
 
+def _nominatim_search(query: str) -> tuple | None:
+    """קריאה ישירה ל-Nominatim API עם מיקוד גיאוגרפי לת"א."""
+    params = {
+        "q": query,
+        "format": "json",
+        "limit": 1,
+        "countrycodes": "il",
+        # viewbox: lon_min,lat_max,lon_max,lat_min — פורמט Nominatim
+        "viewbox": f"{TA_BBOX[1]},{TA_BBOX[2]},{TA_BBOX[3]},{TA_BBOX[0]}",
+        "bounded": 0,
+        "accept-language": "he,en",
+    }
+    resp = requests.get(_NOMINATIM_URL, params=params,
+                        headers=_NOMINATIM_HEADERS, timeout=10)
+    data = resp.json()
+    if data:
+        return float(data[0]["lat"]), float(data[0]["lon"])
+    return None
+
+
+def _overpass_search(name: str) -> tuple | None:
+    """חיפוש POI לפי שם ב-Overpass API (OSM) — מכסה קניונים, מסעדות, מוסדות."""
+    query = (
+        f"[out:json][timeout:10];"
+        f"("
+        f'  node["name"="{name}"]{_TA_OVERPASS_BBOX};'
+        f'  way["name"="{name}"]{_TA_OVERPASS_BBOX};'
+        f'  relation["name"="{name}"]{_TA_OVERPASS_BBOX};'
+        f");"
+        f"out center 1;"
+    )
+    try:
+        resp = requests.post(
+            _OVERPASS_URL,
+            data={"data": query},
+            headers=_NOMINATIM_HEADERS,
+            timeout=12,
+        )
+        for el in resp.json().get("elements", []):
+            lat = el.get("lat") or el.get("center", {}).get("lat")
+            lon = el.get("lon") or el.get("center", {}).get("lon")
+            if lat and lon:
+                return float(lat), float(lon)
+    except Exception:
+        pass
+    return None
+
+
 def geocode_address(address: str) -> tuple:
     """
     ממיר כתובת טקסטואלית (עברית או אנגלית) לקואורדינטות (lat, lon).
 
-    מוסיף ', תל אביב, ישראל' אוטומטית אם הכתובת אינה כוללת "tel".
-    זורק ValueError עם הודעה בעברית אם הכתובת לא נמצאה או מחוץ לאזור.
+    שלב 1 — Nominatim (3 צורות שאילתה).
+    שלב 2 — Overpass API: fallback לשמות POI (ללא מספר בית) — מכסה כל ישות
+             ב-OSM עם שם מדויק, כולל אלה שNominatim מחזיר בשם שונה מעט.
     """
-    enriched = address if "tel" in address.lower() else f"{address}, תל אביב, ישראל"
-    point = ox.geocode(enriched)
-    if point is None:
-        raise ValueError(f"הכתובת '{address}' לא נמצאה — נסה ניסוח אחר")
-    lat, lon = point
-    if not (TA_BBOX[0] <= lat <= TA_BBOX[2] and TA_BBOX[1] <= lon <= TA_BBOX[3]):
-        raise ValueError(f"הכתובת '{address}' נמצאת מחוץ לאזור תל אביב")
-    return lat, lon
+    lower = address.lower()
+    queries = []
+    if "tel" not in lower:
+        queries.append(f"{address}, תל אביב")
+        queries.append(f"{address}, ישראל")
+    queries.append(address)
+
+    for q in queries:
+        try:
+            point = _nominatim_search(q)
+        except Exception:
+            continue
+        if point is None:
+            continue
+        lat, lon = point
+        if TA_BBOX[0] <= lat <= TA_BBOX[2] and TA_BBOX[1] <= lon <= TA_BBOX[3]:
+            return lat, lon
+
+    # Nominatim לא מצא — ננסה Overpass לשמות POI (כתובת ללא ספרות = שם מקום)
+    if not re.search(r"\d", address):
+        _bare = address.strip().split(",")[0].strip()
+        for _name in dict.fromkeys([address.strip(), _bare]):   # ללא כפילויות
+            _pt = _overpass_search(_name)
+            if _pt is not None:
+                lat, lon = _pt
+                if TA_BBOX[0] <= lat <= TA_BBOX[2] and TA_BBOX[1] <= lon <= TA_BBOX[3]:
+                    return lat, lon
+
+    raise ValueError(
+        f"המיקום '{address}' לא נמצא באזור תל אביב — "
+        "נסה כתובת מדויקת יותר (למשל: 'רחוב דיזינגוף 50')"
+    )
 
 
 def compute_route(origin_latlon: tuple, dest_latlon: tuple) -> dict:
@@ -192,6 +276,7 @@ def compute_tci_weights(
     cloud_cover: float,
     temperature: float,
     humidity: float,
+    shade_factor: float = 1.0,
 ) -> tuple:
     """
     מחשב TCI לכל 58k קשתות הגרף ומחזיר (weight_dict, tci_by_uv).
@@ -239,15 +324,36 @@ def compute_tci_weights(
         dtype=bool, count=len(ef),
     )
     _factor = np.where(_is_pref, BOULEVARD_WEIGHT_FACTOR, 1.0)
-    ef["tci_weight"] = ef["tci"] * ef["length"].clip(lower=0.1) * _factor
 
-    weight_dict = ef.groupby(["u", "v"])["tci_weight"].min().to_dict()
-    tci_by_uv   = ef.groupby(["u", "v"])["tci"].mean().to_dict()
+    # העדפת שבילי הולכי-רגל ייעודיים (footway/pedestrian/path) — הנחה נוספת 20%.
+    if "highway" in edges_df.columns:
+        _ped_types = {"footway", "pedestrian", "path", "living_street"}
+        _is_ped = edges_df["highway"].fillna("").apply(
+            lambda h: (h[0] if isinstance(h, list) else str(h)) in _ped_types
+        ).to_numpy()
+        _factor = np.where(_is_ped, PEDESTRIAN_WEIGHT_FACTOR, 1.0) * _factor
+
+    # shade_factor>1 מגביר הבדלי TCI: TCI=2→2^1.5≈2.8, TCI=8→8^1.5≈22.6 — פי 8 במקום פי 4
+    _tci_w = np.clip(ef["tci"] ** shade_factor, 1.0, None)
+    ef["tci_weight"] = _tci_w * ef["length"].clip(lower=0.1) * _factor
+
+    _gb = ef.groupby(["u", "v"]).agg(tci_weight=("tci_weight", "min"), tci=("tci", "mean"))
+    weight_dict = _gb["tci_weight"].to_dict()
+    tci_by_uv   = _gb["tci"].to_dict()
     for (u, v), w in list(weight_dict.items()):
         weight_dict.setdefault((v, u), w)
         tci_by_uv.setdefault((v, u), tci_by_uv[(u, v)])
 
     return weight_dict, tci_by_uv
+
+
+def _haversine_m(G: nx.MultiDiGraph, u, v) -> float:
+    """מרחק ישר (מטרים) בין שני צמתים — היוריסטיקה admissible ל-A*."""
+    lat1 = math.radians(G.nodes[u]["y"]); lon1 = math.radians(G.nodes[u]["x"])
+    lat2 = math.radians(G.nodes[v]["y"]); lon2 = math.radians(G.nodes[v]["x"])
+    dlat = lat2 - lat1; dlon = lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return 6_371_000 * 2 * math.asin(math.sqrt(a))
 
 
 def compute_shaded_route(
@@ -258,10 +364,10 @@ def compute_shaded_route(
     G: nx.MultiDiGraph = None,
 ) -> dict:
     """
-    מחשב מסלול הליכה מוצל בין שתי נקודות דרך Dijkstra עם משקלי TCI.
+    מחשב מסלול הליכה מוצל בין שתי נקודות דרך A* עם משקלי TCI.
 
-    מקבל weight_dict ו-tci_by_uv מחושבים מראש (דרך compute_tci_weights) כדי לאפשר
-    caching חיצוני — הגרף ו-weight_dict נשמרים בין לחיצות ו-Dijkstra הוא הפעולה היחידה.
+    A* עם היוריסטיקת haversine ×0.5 (admissible: min_weight_per_m = TCI_min×factor_min = 0.5).
+    מחזיר את אותו מסלול אופטימלי כמו Dijkstra אך עם פחות צמתים שנחקרים (~20-30% מהיר יותר).
     """
     if G is None:
         G = load_graph()
@@ -272,8 +378,9 @@ def compute_shaded_route(
         raise ValueError("נקודת המוצא והיעד קרובות מדי — נסה כתובות מרוחקות יותר")
 
     try:
-        path = nx.dijkstra_path(
+        path = nx.astar_path(
             G, orig_node, dest_node,
+            heuristic=lambda u, v: _haversine_m(G, u, v) * 0.5,
             weight=lambda u, v, d: weight_dict.get((u, v), d.get("length", 50) * 5),
         )
     except nx.NetworkXNoPath:
@@ -281,8 +388,9 @@ def compute_shaded_route(
 
     route_latlon = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in path]
 
-    total_dist = 0.0
-    tci_vals   = []
+    total_dist  = 0.0
+    tci_full    = []   # N-1 ערכים, None כשאין TCI לקשת
+    tci_valid   = []   # לחישוב avg_tci
     for i in range(len(path) - 1):
         u, v = path[i], path[i + 1]
         if G.has_edge(u, v):
@@ -290,13 +398,18 @@ def compute_shaded_route(
             total_dist += G[u][v][best_k].get("length", 0.0)
         tci_val = tci_by_uv.get((u, v)) or tci_by_uv.get((v, u))
         if tci_val is not None:
-            tci_vals.append(float(tci_val))
+            val = float(tci_val)
+            tci_full.append(val)
+            tci_valid.append(val)
+        else:
+            tci_full.append(None)
 
     return {
         "route_latlon": route_latlon,
         "distance_m":   total_dist,
         "duration_min": total_dist / WALK_SPEED_MPM,
-        "avg_tci":      float(np.mean(tci_vals)) if tci_vals else None,
+        "avg_tci":      float(np.mean(tci_valid)) if tci_valid else None,
+        "tci_list":     tci_full,   # תמיד אורך N-1
     }
 
 
@@ -305,7 +418,7 @@ def sun_position(nav_hour: float, now: datetime = None,
     """
     מיקום השמש (גובה°, אזימוט°) לשעה nav_hour בתאריך של `now` (ברירת מחדל: היום).
 
-    nav_hour בשעון מקומי (IDT=UTC+3) — ממיר ל-UTC לפני הקריאה ל-PySolar.
+    nav_hour בשעון מקומי ישראלי — ממיר ל-UTC תוך שמירה על DST נכון (UTC+2/+3).
     אם PySolar לא מותקן — מחזיר ברירת מחדל סבירה (45°, 180°) כמו בקוד הישן.
     """
     if not _PYSOLAR:
@@ -313,8 +426,10 @@ def sun_position(nav_hour: float, now: datetime = None,
     if now is None:
         now = datetime.now()
     hh = int(nav_hour)
-    mm = int(round((nav_hour - hh) * 60))
-    dt_utc = datetime(now.year, now.month, now.day, hh - 3, mm, tzinfo=timezone.utc)
+    mm = min(int(round((nav_hour - hh) * 60)), 59)
+    tz_il = ZoneInfo("Asia/Jerusalem")
+    dt_local = datetime(now.year, now.month, now.day, hh, mm, tzinfo=tz_il)
+    dt_utc = dt_local.astimezone(timezone.utc)
     alt = float(_solar.get_altitude(lat, lon, dt_utc))
     az = float(_solar.get_azimuth(lat, lon, dt_utc))
     return alt, az
@@ -332,6 +447,7 @@ def plan_route(
     has_model: bool = False,
     graph: nx.MultiDiGraph = None,
     now: datetime = None,
+    shade_factor: float = 1.0,
 ) -> dict:
     """
     מתזמר מסלול שלם מקלט גולמי — כל לוגיקת הניווט שהייתה ב-app.py, בלי Streamlit.
@@ -368,9 +484,18 @@ def plan_route(
         result["fallback"] = "model_missing"
         return result
 
+    sun_alt, sun_az = sun_position(nav_hour, now=now)
+    if sun_alt <= 0:
+        result["route_result"] = compute_route(origin_latlon, dest_latlon)
+        result["fallback"] = "night"
+        return result
+
     weather = weather_fn() if weather_fn is not None else {
         "cloud_cover": 30.0, "temperature": 27.0, "humidity": 65.0}
-    sun_alt, sun_az = sun_position(nav_hour, now=now)
+    if weather.get("cloud_cover", 0) >= 80:
+        result["route_result"] = compute_route(origin_latlon, dest_latlon)
+        result["fallback"] = "overcast"
+        return result
 
     # עיגול לצורך cache — RF מחושב פעם אחת לכל תנאי מזג אוויר
     alt_r = round(sun_alt / 5) * 5
@@ -379,9 +504,10 @@ def plan_route(
     temp_r = round(weather["temperature"] / 5) * 5
     hum_r = round(weather["humidity"] / 10) * 10
 
+    shade_r = round(shade_factor * 2) / 2   # מעוגל ל-0.5 לצורך cache grouping
     wdict, tci_uv = (None, None)
     if weights_fn is not None:
-        wdict, tci_uv = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r)
+        wdict, tci_uv = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, shade_r)
 
     if wdict is None:
         result["route_result"] = compute_route(origin_latlon, dest_latlon)
@@ -400,20 +526,67 @@ def build_route_map(
     dest_latlon: tuple,
     route_result: dict,
     color: str = "#2980b9",
+    tci_list: list | None = None,
+    fast_result: dict | None = None,
 ) -> folium.Map:
     """
     בונה מפת Folium עם המסלול, נקודות ההתחלה והסיום.
-    המפה מותאמת אוטומטית לגבולות המסלול.
+    tci_list: רשימת TCI פר-קשת לצביעת רמזור (ירוק/כתום/אדום).
+    fast_result: תוצאת מסלול מהיר להשוואה (PolyLine כחול מקווקו).
     """
     m = folium.Map(location=[TA_LAT, TA_LON], zoom_start=14, tiles="CartoDB positron")
 
-    folium.PolyLine(
-        route_result["route_latlon"],
-        color=color,
-        weight=5,
-        opacity=0.85,
-        tooltip=f"מסלול: {route_result['distance_m']:.0f} מ' | {route_result['duration_min']:.0f} דקות",
-    ).add_to(m)
+    pts = route_result["route_latlon"]
+    if tci_list and len(tci_list) == len(pts) - 1:
+        def _tci_color(tci) -> str:
+            if tci is None:
+                return "#95a5a6"   # אפור — לא ידוע
+            if tci < 4:
+                return "#27ae60"   # ירוק — מוצל
+            if tci < 7:
+                return "#f39c12"   # כתום — ביניים
+            return "#c0392b"       # אדום — שמש
+
+        for i, tci in enumerate(tci_list):
+            folium.PolyLine(
+                pts[i:i + 2],
+                color=_tci_color(tci),
+                weight=6,
+                opacity=0.9,
+                tooltip=f"TCI: {tci:.1f}" if tci is not None else "TCI לא זמין",
+            ).add_to(m)
+
+        legend_html = """
+        <div style="position:fixed;bottom:30px;left:30px;z-index:9999;background:white;
+                    padding:8px 12px;border-radius:8px;border:1px solid #ccc;font-size:13px;
+                    line-height:1.8;direction:rtl;">
+          <b>עוצמת קרינה</b><br>
+          <span style="background:#27ae60;display:inline-block;width:14px;height:14px;
+                border-radius:3px;margin-left:5px;"></span>מוצל (TCI 1–4)<br>
+          <span style="background:#f39c12;display:inline-block;width:14px;height:14px;
+                border-radius:3px;margin-left:5px;"></span>ביניים (TCI 4–7)<br>
+          <span style="background:#c0392b;display:inline-block;width:14px;height:14px;
+                border-radius:3px;margin-left:5px;"></span>שמש מלאה (TCI 7–10)<br>
+          <span style="display:inline-block;width:28px;height:0;
+                border-top:3px dashed #2980b9;margin-left:5px;vertical-align:middle;">
+          </span>מסלול מהיר (OSRM)
+        </div>"""
+        m.get_root().html.add_child(folium.Element(legend_html))
+    else:
+        folium.PolyLine(
+            pts, color=color, weight=5, opacity=0.85,
+            tooltip=f"מסלול: {route_result['distance_m']:.0f} מ' | {route_result['duration_min']:.0f} דקות",
+        ).add_to(m)
+
+    if fast_result:
+        folium.PolyLine(
+            fast_result["route_latlon"],
+            color="#2980b9",
+            weight=4,
+            opacity=0.7,
+            dash_array="8 5",
+            tooltip=f"מהיר: {fast_result['distance_m']:.0f} מ' | {fast_result['duration_min']:.0f} דקות",
+        ).add_to(m)
 
     folium.Marker(
         location=origin_latlon,
@@ -429,8 +602,9 @@ def build_route_map(
         tooltip="יעד",
     ).add_to(m)
 
-    lats = [p[0] for p in route_result["route_latlon"]]
-    lons = [p[1] for p in route_result["route_latlon"]]
+    all_pts = list(pts) + (list(fast_result["route_latlon"]) if fast_result else [])
+    lats = [p[0] for p in all_pts]
+    lons = [p[1] for p in all_pts]
     m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
 
     return m

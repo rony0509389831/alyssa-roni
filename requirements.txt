@@ -32,6 +32,7 @@ joblib>=1.3            # שמירה/טעינה של מודל ה-TCI המאומן
 osmnx>=1.9            # גרף רחובות OSM + geocoding
 networkx>=3.3         # Dijkstra + graph operations
 pysolar>=0.11         # נדרש לחישוב מיקום השמש במפה
+tzdata>=2024.1        # נדרש ל-ZoneInfo("Asia/Jerusalem") ב-Linux/Streamlit Cloud
 
 # ==========================================
 # סוכן LLM (M4)
