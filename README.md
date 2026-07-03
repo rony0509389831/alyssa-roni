@@ -112,7 +112,7 @@ $$\mathcal{L} = \text{MSE} = \frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2$$
 
 **Baseline:** 
 
-ה-baseline למודל ה-ML הוא `DummyRegressor(strategy="mean")` — תמיד מנבא את ממוצע ה-TCI (RMSE≈2.14 על test). כל מודל אמיתי חייב לנצח אותו. (Linear Regression / Decision Tree / Random Forest הם **מודלים מועמדים**, לא baseline.) יעילות הניווט הכללית תושווה בנפרד מול אלגוריתם $\text{Dijkstra}$ גיאומטרי.
+ה-baseline למודל ה-ML הוא `DummyRegressor(strategy="mean")` — תמיד מנבא את ממוצע ה-TCI (RMSE≈2.14 על test). כל מודל אמיתי חייב לנצח אותו. (Linear Regression / Decision Tree / Random Forest הם **מודלים מועמדים**, לא baseline.)
 
 **M3 — מה מומש בפועל (ושיפורים עתידיים):**
 
@@ -131,7 +131,9 @@ $$\mathcal{L} = \text{MSE} = \frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2$$
 ```mermaid
 flowchart TD
     subgraph Input["קלט המערכת (Input Schema)"]
-        A["משתמש: נקודות מוצא, יעד ושעת יציאה מבוקשת"]
+        A["משתמש: טקסט חופשי עברית/אנגלית (מוצא, יעד, שעה, רמת צל)"]
+        LLM["src/agent.py — Groq LLM: חילוץ פרמטרי מסלול (origin, dest, hour, shade_level)"]
+        A --> LLM
     end
 
     subgraph Data_Sources["מקורות מידע (Data Layer)"]
@@ -151,14 +153,14 @@ flowchart TD
     end
 
     subgraph Routing["אלגוריתם ניווט (Routing Layer)"]
-        I["גרף משוקלל: הרצת Dijkstra על בסיס משקולות החום החזויות"]
+        I["גרף משוקלל: A* (Haversine heuristic ×0.5) עם משקל TCI^shade_factor × אורך"]
     end
 
     subgraph Output["פלט המערכת (Output Schema)"]
         J["מפת Folium אינטראקטיבית ב-Streamlit המציגה מסלול מוצל אופטימלי"]
     end
 
-    A --> G
+    LLM --> G
     B --> H
     C --> F
     D --> F
@@ -171,11 +173,12 @@ flowchart TD
 
 
 **תיאור זרימה:**
-1. **Frontend & UI (Streamlit & Folium):** ממשק לקליטת נתוני המשתמש (זמן ומרחב) והצגת הפלט הוויזואלי הסופי.
-2. **Dynamic Environmental Data:**  פנייה ל-API של Open-Meteo לשליפת מזג האוויר ואינטגרציה עם PySolar לחישוב מיקום השמש האסטרונומי.
-3. **Spatial Processing Layer (GeoPandas):**  הלבשת שכבות ה-GIS הסטטיות (מבני העירייה וחופת העצים של מפ"י) על גבי גרף הרחובות הטופולוגי שנשלף מ-OSMnx.
-4. **Machine Learning Model (Scikit-Learn):** חישוב משקולת עומס חום מורגש (בין 1 ל-10) לכל קשת בגרף על בסיס הפיצ'רים הדינמיים והסטטיים.
-5. **Graph Routing Algorithm (NetworkX / Dijkstra):**  מציאת המסלול בעל העלות התרמית הנמוכה ביותר והזרקתו חזרה למפת ה-Frontend.
+0. **LLM Agent (Groq / `src/agent.py`):** קלט טקסט חופשי עברית/אנגלית → `llama-3.3-70b-versatile` מחלץ פרמטרים (origin, dest, hour, mode, shade_level). Geocoding מדורג: Nominatim → Overpass API (POIs) → Photon (fuzzy, שגיאות כתיב).
+1. **Frontend & UI (Streamlit & Folium):** ממשק לקליטת נתוני המשתמש והצגת הפלט הוויזואלי הסופי עם gradient צבע לפי TCI.
+2. **Dynamic Environmental Data:** פנייה ל-API של Open-Meteo לשליפת מזג האוויר ואינטגרציה עם PySolar לחישוב מיקום השמש האסטרונומי.
+3. **Spatial Processing Layer (GeoPandas):** הלבשת שכבות ה-GIS הסטטיות (מבני העירייה וחופת העצים של מפ"י) על גבי גרף הרחובות הטופולוגי שנשלף מ-OSMnx.
+4. **Machine Learning Model (Scikit-Learn):** חישוב TCI (1–10) לכל קשת בגרף. shadow_cov נטען מ-lookup טבלה מחושבת מראש (precompute_shadow.py).
+5. **Graph Routing Algorithm (NetworkX / A\*):** A* עם Haversine heuristic ×0.5 — מוצא מסלול עלות מינימלית: `TCI^shade_factor × length × street_factor`. Fallback ל-OSRM בלילה/עננות/מודל חסר.
 
 ---
 
@@ -215,6 +218,8 @@ flowchart TD
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+> **LLM Agent:** נדרש `GROQ_API_KEY` בסביבה להפעלת קלט טקסט חופשי. ללא המפתח — ה-agent מחזיר הודעת שגיאה בעברית; שאר האפליקציה (ניווט, מפה, EDA) עובדת כרגיל.
 
 ---
 
@@ -295,16 +300,22 @@ python -m src.model
 
 > **הערה חשובה:** אם `data/tci_model.joblib` חסר — הריצו `python -m src.model` פעם אחת לפני הפעלת האפליקציה.
 
-#### 🚶 טאב ניווט — מסלול מוצל מונחה ML
+#### 🚶 טאב ניווט — מסלול מוצל מונחה ML (M4)
 
-מודל ה-RandomForest משמש גם בטאב **🚶 ניווט** לתכנון מסלולים מוצלים:
+מודל ה-RandomForest משמש בטאב **🚶 ניווט** (הטאב הראשון באפליקציה) לתכנון מסלולים מוצלים:
 
+**קלט LLM:** ניתן להזין **טקסט חופשי** בעברית/אנגלית — לדוגמה: "אני רוצה ללכת מרוטשילד למוזיאון תל אביב בצהריים עם כמה שיותר צל" — ה-agent (Groq) מחלץ אוטומטית origin, destination, שעה ו-shade_level.
+
+**שלבי השימוש:**
 1. בחרו **"🌿 הכי מוצל (מודל ML)"** כסוג מסלול
 2. בחרו **שעת יציאה** בסליידר (6:00→19:00) — השמש מחושבת לתאריך של היום בשעה זו (מזג האוויר נשאר חי)
-3. הזינו נקודת מוצא ויעד בתל אביב
-4. המודל מחזה TCI לכל ~59,000 קשתות הגרף בקריאת `predict` אחת (עם `shadow_cov` לפי השעה הנבחרת)
-5. Dijkstra מוצא את המסלול בעל עלות מינימלית: `weight = TCI × length × העדפת-ירוק`
-6. המסלול מוצג בירוק + מדד **"חשיפה ממוצעת לשמש"** (TCI ממוצע, 1–10)
+3. בחרו **רמת צל** (קצר / מאוזן / מוצל / מקסימום) — ממופה ל-`shade_factor` שמגביר ניגודיות: `TCI^shade_factor`
+4. הזינו נקודת מוצא ויעד (כתובת מדויקת, שם עסק, או שם POI — geocoding 3-שלבי)
+5. המודל מחזה TCI לכל ~59,000 קשתות הגרף בקריאת `predict` אחת
+6. **A\*** (Haversine heuristic ×0.5) מוצא את המסלול בעל עלות מינימלית: `TCI^shade_factor × length × street_factor`
+7. המסלול מוצג עם **gradient צבע** (ירוק<4, כתום 4–7, אדום>7) + ממוצע TCI
+
+> **Fallback:** בלילה (sun_altitude≤0°), עננות כבדה (≥80%), או כשהמודל חסר — האפליקציה חוזרת ל-OSRM אוטומטית עם הסבר.
 
 **העדפת רחובות ירוקים:** קשת ברחוב "ירוק" מקבלת מקדם ×0.5 במשקל הניווט, כדי שהמסלול יעדיף רחובות מוצלים גם מעבר ל-TCI הגולמי. רחוב ירוק = ממוצע כיסוי-עצים > 35%, **או** שדרה עם כיסוי ≥ 24% (רף רוטשילד — תופס בולווארדים כמו רוטשילד/ח"ן/בן גוריון שעצי הטיילת המרכזית שלהם תת-נספרים בקשתות הכביש). ה-TCI עצמו נשאר מדד נוחות נקי; זו העדפת ניווט בלבד.
 
@@ -322,22 +333,50 @@ python -m src.model
 
 ---
 
-## 12. M4 — שיפורי ביצועים ונגישות למשתמש (בתכנון)
+## 12. M4 — שיפורי ביצועים ונגישות למשתמש (מומש)
 
-בהמשך לפיתוח MVP של M3, מתוכননים השיפורים הבאים לחוויית המשתמש:
+בהמשך לפיתוח MVP של M3, M4 הוסיף את השיפורים הבאים:
 
-**שיפורי ממשק — טאב ניתוח נתונים:**
-- הגרף התחתון (גרף 4) יציג ציר X לפי **שעה ביום** (6:00–20:00) במקום זווית שמש בלבד, כך שהמשתמש יבין אינטואיטיבית "בשעה 14:00 הרחוב הזה חם" ולא רק "ב-68° altitude".
+### LLM Agent — קלט טקסט חופשי (src/agent.py)
 
-**שיפורי ניווט — בחירת זמן יציאה:**
-- ✅ **מומש (M3.5):** בורר שעה ביום הנוכחי (6:00→19:00) — השמש מחושבת לאותה שעה עם PySolar (מזג האוויר נשאר של עכשיו).
-- 🔜 עתידי: **שעת יציאה עתידית עד 48 שעות** עם תחזית מזג אוויר שעתית (Open-Meteo forecast API) — כך שגם העננות/טמפ' יתעדכנו לשעה הנבחרת, לא רק השמש.
+הטאב ניווט תומך כעת בקלט טקסט חופשי בעברית/אנגלית:
+- **מודל:** Groq API — llama-3.3-70b-versatile
+- **תפקיד:** חילוץ פרמטרים בלבד — origin, destination, hour, date, mode, shade_level, recommendation (100 תווים)
+- **Hebrew normalization:** קידומות דקדוקיות (מ/ל/ב/ה) מנוקות משמות מקומות לפני geocoding
+- **לוגיקת מזג-אוויר:** בלילה/עננות כבדה — ה-agent ממליץ אוטומטית על מסלול מהיר עם הסבר
+- **Fallback:** כל כשלון (auth, network, JSON parse) → הודעת שגיאה ידידותית בעברית
+- **תלות:** GROQ_API_KEY בסביבה (אופציונלי — שאר האפליקציה עובדת ללא המפתח)
 
-**שיפורי ניווט — הצגת TCI פר-מקטע על המסלול:**
-- בשני מצבי המסלול (מוצל + מהיר), כל קטע יוצג עם ציון ה-TCI שלו — צביעה ב-gradient לפי ערך — כדי לראות ויזואלית את ההבדל בין המסלול המוצל למהיר.
+### Geocoding מדורג ב-3 שלבים
 
-**שיפורי נגישות — חיפוש לפי שם מקום:**
-- תמיכה בחיפוש יעד לפי **שם עסק או מקום** בתל אביב (מסעדה, קפה, פארק) ולא רק לפי כתובת מדויקת — באמצעות Nominatim/OSM POI search או Google Places API.
+במקום Nominatim בלבד:
+1. **Nominatim** — 3 וריאנטי שאילתה
+2. **Overpass API** — שמות POI ללא כתובת מדויקת (מסעדות, קפה, פארקים)
+3. **Photon** — fuzzy geocoder שסובל שגיאות כתיב וחיפוש לפי שם עסק
+
+### shade_level — שליטה על עוצמת העדפת הצל
+
+| רמה | shade_factor | אפקט |
+|-----|-------------|-------|
+| short | 0.5 | מסלול קצר; צל שיקול משני |
+| balanced | 1.0 | שיקול שווה (ברירת מחדל) |
+| shaded | 1.5 | צל מועדף; מוכנות להאריך |
+| max | 2.5 | מקסימום צל; אורך לא מגבלה |
+
+משקל הקשת = TCI^shade_factor x length x street_factor
+
+### שיפורים נוספים
+
+- **A\* במקום Dijkstra:** Haversine heuristic x0.5 (admissible) — מהיר יותר עם אחריות אופטימליות
+- **Pedestrian bonus:** footways/pedestrian paths — משקל x0.8
+- **TCI color gradient על המסלול:** ירוק<4, כתום 4-7, אדום>7
+- **Fallback modes:** model_missing / night / overcast / weights_missing → OSRM אוטומטי
+
+### עתידי (לא מומש עדיין)
+
+- **שעת יציאה עתידית עד 48 שעות** — Open-Meteo forecast API (כעת: מזג אוויר חי, שמש לשעה הנבחרת)
+- **footprints אמיתיים + ray-casting** — במקום ריבוע 20מ' מצנטרואיד
+- **תוויות LST אמיתיות** מלוויין (Earth Engine) — שוברות את המעגליות של היעד הסינתטי
 
 ---
 ***SHADY - Stay Cool ;)***

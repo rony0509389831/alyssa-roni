@@ -160,9 +160,29 @@ def _get_weather_cached() -> dict:
     return {"temperature": 27.0, "humidity": 65.0, "cloud_cover": 30.0, "source": "default"}
 
 if _ROUTING:
+    from src.agent import normalize_place_name as _normalize_place
+
     @st.cache_data(show_spinner=False)
     def _geocode_cached(address: str) -> tuple:
         return geocode_address(address)
+
+    def _geocode_llm(address: str) -> tuple:
+        """_geocode_cached עם LLM fallback — אם כל שלושת השלבים נכשלים, מנסה לנרמל דרך Groq."""
+        try:
+            return _geocode_cached(address)
+        except ValueError:
+            try:
+                groq_key = st.secrets.get("GROQ_API_KEY", "")
+            except Exception:
+                groq_key = ""
+            if groq_key:
+                normalized = _normalize_place(address, groq_key)
+                if normalized:
+                    try:
+                        return _geocode_cached(normalized)
+                    except ValueError:
+                        pass
+            raise
 
     def _validate_address_field(addr_key: str, ok_key: str, err_key: str) -> None:
         """on_change callback — מגאוקד את הכתובת ושומר תוצאה ב-session_state."""
@@ -172,7 +192,7 @@ if _ROUTING:
         if not addr:
             return
         try:
-            st.session_state[ok_key] = _geocode_cached(addr)
+            st.session_state[ok_key] = _geocode_llm(addr)
         except ValueError as e:
             st.session_state[err_key] = str(e)
 
@@ -297,9 +317,9 @@ if _ROUTING:
     _load_nav_graph()
 
 # ── טאבים ──────────────────────────────────────────────────────────────────────
-tab_problem, tab_lit, tab_market, tab_eda, tab_map, tab_nav, tab_about = st.tabs([
-    "🎯 למידת הבעיה", "📚 סקירת ספרות", "🏪 סקר שוק", "📊 ניתוח נתונים",
-    "🗺️ מפה", "🚶 ניווט", "ℹ️ אודות"
+tab_nav, tab_about, tab_problem, tab_lit, tab_market, tab_eda, tab_map = st.tabs([
+    "🚶 ניווט", "ℹ️ אודות", "🎯 למידת הבעיה", "📚 סקירת ספרות", "🏪 סקר שוק",
+    "📊 ניתוח נתונים", "🗺️ הדגמת נתונים"
 ])
 
 
@@ -1931,12 +1951,17 @@ with tab_nav:
     # מחלץ פרמטרים מטקסט חופשי וממלא את טופס הניווט שלמטה. חייב לרוץ *לפני* יצירת
     # ה-widgets, אחרת Streamlit אוסר לכתוב ל-session_state של widget קיים.
     st.markdown("#### 💬 דברו עם הסוכן")
-    _agent_text = st.text_input(
-        "תארו את הבקשה במשפט אחד",
-        placeholder='לדוגמה: "מכיכר רבין לשוק הכרמל ב-3 אחה\"צ בדרך הכי מוצלת"',
-        key="agent_text",
-    )
-    if st.button("שלח לסוכן 🤖"):
+    with st.form("agent_form", clear_on_submit=False):
+        _agent_text = st.text_input(
+            "תארו את הבקשה במשפט אחד",
+            placeholder='לדוגמה: "מכיכר רבין לשוק הכרמל ב-3 אחה\"צ בדרך הכי מוצלת"',
+            key="agent_text",
+        )
+        _agent_submit = st.form_submit_button("שלח לסוכן 🤖", use_container_width=True)
+    if _agent_submit:
+        st.session_state.pop("_agent_banner", None)           # נקה כרזות ישנות לפני בקשה חדשה
+        st.session_state.pop("_agent_recommendation", None)
+        st.session_state.pop("_agent_nav_mode", None)
         try:
             _groq_key = st.secrets.get("GROQ_API_KEY")
         except Exception:
@@ -1949,25 +1974,112 @@ with tab_nav:
             st.warning("⚠️ כתבו בקשה לסוכן.")
         else:
             with st.spinner("הסוכן מנתח את הבקשה..."):
-                _params = extract_route_params(_agent_text, _groq_key)
+                from datetime import date as _date_cls
+                # זווית שמש נוכחית (לפי שעה אמיתית עכשיו, לא nav_time) להמלצת הסוכן
+                _agent_sun_alt = None
+                if _PYSOLAR:
+                    try:
+                        from zoneinfo import ZoneInfo as _ZI_a
+                        import datetime as _dt_a
+                        _dtc_a = _dt_a.datetime.now(tz=_ZI_a("Asia/Jerusalem"))
+                        _agent_sun_alt = float(_solar.get_altitude(32.08, 34.77, _dtc_a))
+                    except Exception:
+                        pass
+                _weather_a = _get_weather_cached()
+                _params = extract_route_params(
+                    _agent_text, _groq_key, today=_date_cls.today(),
+                    sun_altitude=_agent_sun_alt,
+                    temperature=_weather_a.get("temperature"),
+                    cloud_cover=_weather_a.get("cloud_cover"),
+                )
             if _params.get("error"):
                 st.warning(_params["error"])
             else:
                 # ממלאים את טופס הניווט הקיים — ה-widgets נוצרים מיד אחר כך וקוראים את הערכים.
                 st.session_state["nav_origin"] = _params["origin"]
                 st.session_state["nav_dest"]   = _params["destination"]
+                from datetime import time as _time_cls, date as _da, timedelta as _tdd
                 if _params["hour"] is not None:
                     _ah = int(_params["hour"])
                     _am = int(round((_params["hour"] - _ah) * 60))
-                    from datetime import time as _time_cls
                     st.session_state["nav_time"] = _time_cls(min(_ah, 23), min(_am, 59))
+                else:
+                    # שעה לא צוינה (עכשיו / לא הוזכרה) → איפוס לשעה נוכחית
+                    _now_r = datetime.now()
+                    _h_r   = min(max(_now_r.hour, 6), 18)
+                    _m_r   = 30 if _now_r.minute >= 30 else 0
+                    st.session_state["nav_time"] = _time_cls(_h_r, _m_r)
+                if _params.get("date"):
+                    _parsed_d = _da.fromisoformat(_params["date"])
+                    _today_d  = _da.today()
+                    if _today_d <= _parsed_d <= _today_d + _tdd(days=7):
+                        st.session_state["nav_date"] = _parsed_d
+                else:
+                    # תאריך לא צוין → איפוס להיום
+                    st.session_state["nav_date"] = _da.today()
+                # העדפת צל — עדכן רק אם הסוכן זיהה במפורש
+                _sl = _params.get("shade_level")
+                _shade_map_agent = {
+                    "short":    "🚶 קצר בעיקר",
+                    "balanced": "🌤 מאוזן",
+                    "shaded":   "🌿 מוצל בעיקר",
+                    "max":      "🌳 צל מקסימלי",
+                }
+                if _sl in _shade_map_agent:
+                    st.session_state["nav_shade_pref_label"] = _shade_map_agent[_sl]
+                st.session_state["_agent_nav_mode"] = _params.get("mode", "shaded")
+                # on_change callback לא מופעל על שינוי תכנותי — גיאוקוד ידני
+                if _ROUTING:
+                    for _addr_key, _ok_key, _err_key in [
+                        ("nav_origin", "_origin_ok", "_origin_err"),
+                        ("nav_dest",   "_dest_ok",   "_dest_err"),
+                    ]:
+                        _addr = st.session_state.get(_addr_key, "").strip()
+                        st.session_state.pop(_ok_key,  None)
+                        st.session_state.pop(_err_key, None)
+                        if _addr:
+                            try:
+                                st.session_state[_ok_key] = _geocode_cached(_addr)
+                            except ValueError as _ve:
+                                st.session_state[_err_key] = str(_ve)
                 _h = _params["hour"]
                 _ht = (f"{int(_h):02d}:{int(round((_h - int(_h)) * 60)):02d}"
                        if _h is not None else "שעה נוכחית")
-                st.success(
-                    f"✅ הבנתי — מ**{_params['origin']}** ל**{_params['destination']}**, "
-                    f"שעה {_ht}. בדקו את הטופס ולחצו \"מצא מסלול\"."
+                _date_val = _params.get("date")
+                if _date_val is None:
+                    _date_str = "היום"
+                else:
+                    _pd = _da.fromisoformat(_date_val)
+                    _diff = (_pd - _da.today()).days
+                    if _diff == 0:
+                        _date_str = "היום"
+                    elif _diff == 1:
+                        _date_str = "מחר"
+                    else:
+                        _date_str = f"{_pd.day}/{_pd.month}"
+                _shade_label_display = {
+                    "short": "קצר בעיקר", "balanced": "מאוזן",
+                    "shaded": "מוצל בעיקר", "max": "צל מקסימלי",
+                }.get(_sl or "", "")
+                _shade_str = f" · {_shade_label_display}" if _shade_label_display else ""
+                st.session_state["_agent_banner"] = (
+                    f"✅ הסוכן מילא — מ**{_params['origin']}** "
+                    f"ל**{_params['destination']}**, {_date_str}, שעה {_ht}{_shade_str}"
                 )
+                _rec = _params.get("recommendation")
+                if _rec:
+                    st.session_state["_agent_recommendation"] = _rec
+                else:
+                    st.session_state.pop("_agent_recommendation", None)
+
+    # כרזה מתמשכת + כפתור הרצה מיידית (נשמרת עד לבקשה הבאה)
+    _quick_run = False
+    if "_agent_banner" in st.session_state:
+        st.success(st.session_state["_agent_banner"])
+        if "_agent_recommendation" in st.session_state:
+            st.info(st.session_state["_agent_recommendation"])
+        _quick_run = st.button("🗺️ הרץ מיד", key="quick_run_btn",
+                               help="הרץ את המסלול עם הפרמטרים שהסוכן מילא")
     st.divider()
 
     c1, c2 = st.columns(2)
@@ -1996,13 +2108,14 @@ with tab_nav:
         elif "_dest_err" in st.session_state:
             st.error(st.session_state["_dest_err"])
 
-    # תיקון RTL בלוח שנה של Streamlit — Baseweb מסדר תאים לפי RTL, הימים מתהפכים
+    # תיקון RTL בלוח שנה — wildcard על כל הצאצאים מבטיח שאף קונטיינר פנימי לא ישאר RTL
     st.markdown("""
 <style>
-div[data-baseweb="calendar"]          { direction: ltr !important; }
-div[data-baseweb="calendar"] table    { direction: ltr !important; }
-div[data-baseweb="calendar"] thead th { direction: ltr !important; }
-div[data-baseweb="calendar"] td       { direction: ltr !important; }
+div[data-baseweb="calendar"],
+div[data-baseweb="calendar"] * {
+    direction: ltr !important;
+    unicode-bidi: isolate !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -2055,14 +2168,24 @@ div[data-baseweb="calendar"] td       { direction: ltr !important; }
         _ca = 45.0
         st.caption(f"🕐 {_nh:02d}:{_nm:02d}")
 
-    shade_pref = st.slider(
-        "🌿 נכונות לסטות מהמסלול הקצר",
-        min_value=1.0, max_value=3.0, value=1.0, step=0.5,
-        key="nav_shade_pref",
-        help="ערך גבוה = הראוטר יסכים לדרך ארוכה יותר בשביל צל; 1.0 = ברירת מחדל (מאוזן)",
-        format="%.1f",
+    _shade_opts = {
+        "🚶 קצר בעיקר":    1.0,
+        "🌤 מאוזן":        1.5,
+        "🌿 מוצל בעיקר":  2.0,
+        "🌳 צל מקסימלי":  3.0,
+    }
+    _shade_label = st.radio(
+        "🌿 העדפת מסלול",
+        options=list(_shade_opts.keys()),
+        index=1,
+        horizontal=True,
+        key="nav_shade_pref_label",
+        help="קצר = המסלול הקצר ביותר; מאוזן = ברירת מחדל; מוצל = מוכן לסטות לצל; מקסימלי = צל גם במחיר עיקוף ניכר",
     )
+    shade_pref = _shade_opts[_shade_label]
 
+    if "nav_compare" not in st.session_state:
+        st.session_state["nav_compare"] = True
     compare_fast = st.checkbox("🔀 הצג גם מסלול מהיר להשוואה", key="nav_compare")
     if _ca <= 0:
         st.info("🌙 חשוך בחוץ — יוצג מסלול מהיר (אין ניגודיות צל בלילה).")
@@ -2070,7 +2193,7 @@ div[data-baseweb="calendar"] td       { direction: ltr !important; }
     find_btn = st.button("מצא מסלול 🗺️", type="primary")
     st.divider()
 
-    if find_btn:
+    if find_btn or _quick_run:
         if not origin_input.strip() or not dest_input.strip():
             st.warning("⚠️ יש להזין גם נקודת מוצא וגם יעד.")
         elif "_origin_ok" not in st.session_state or "_dest_ok" not in st.session_state:
@@ -2082,9 +2205,13 @@ div[data-baseweb="calendar"] td       { direction: ltr !important; }
                 try:
                     _bundle   = load_tci_model()
                     _edges_df = load_edges_full()
+                    _use_shaded = not (
+                        _quick_run and
+                        st.session_state.get("_agent_nav_mode") == "fast"
+                    )
                     plan = plan_route(
                         origin_input, dest_input,
-                        use_shaded=True,
+                        use_shaded=_use_shaded,
                         nav_hour=_nav_hour,
                         geocode_fn=_geocode_cached,
                         weather_fn=_get_weather_cached,
@@ -2188,7 +2315,7 @@ with tab_about:
 
     st.markdown(
         """
-        <div style="background:#fdf6e3;border-right:6px solid #d68910;padding:18px 22px;border-radius:8px;margin:10px 0 22px 0;">
+        <div style="background:#fdf6e3;border-right:6px solid #d68910;padding:18px 22px;border-radius:8px;margin:10px 0 22px 0;direction:rtl;text-align:right;">
         <div style="font-size:14px;color:#7d6608;font-weight:600;margin-bottom:6px;">SHADY — במשפט אחד</div>
         <div style="font-size:18px;line-height:1.5;color:#1c1c1c;">
         <b>SHADY</b> מוצאת מסלולי הליכה מוצלים בתל אביב על בסיס גבהי מבנים, חופת עצים,
@@ -2201,257 +2328,220 @@ with tab_about:
 
     st.divider()
 
-    # ── מקורות נתונים ──────────────────────────────────────────────────────────
-    st.subheader("🗄️ מקורות נתונים")
-
+    st.subheader("👩‍💻 מי אנחנו")
     st.markdown(
         """
-        | שכבה | מקור | רשומות |
-        |------|------|--------|
-        | מבנים | עיריית ת"א (opendata.tel-aviv.gov.il) | 45,783 |
-        | חופת עצים | מפ"י (data.gov.il) | 231,234 |
-        | רשת רחובות | OSMnx | גרף מלא |
-        | מזג אוויר | Open-Meteo API | בזמן אמת |
+        אנחנו **אליסה ורוני** — סטודנטיות בטכניון שאוהבות ללכת ברגל, אבל לא בכל מחיר.
+        מהקיץ הישראלי והתסכול בחוץ נולד הרעיון של SHADY — חיפוש מסלול שמתעדף נוחות על פני מהירות.
+        כך אנחנו שמות דגש על החוויה של ההליכה ונמנעות מלהזיע או לסבול ברחוב בשעות היום.
         """
     )
 
     st.divider()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # M3 — KPI SELECTION
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("🎯 M3 — בחירת KPI: איך עוברים מבעיה למספר אחד?")
-    st.caption("בחרנו את מדד ההצלחה של המודל על פי שלושה שלבים מתודיים")
-
-    # ── תיבת ה-KPI הנבחר ───────────────────────────────────────────────────
+    st.subheader("🧭 איך משתמשים?")
     st.markdown(
         """
-        <div style="background:#eafaf1;border-right:6px solid #1e8449;padding:20px 24px;border-radius:8px;margin:12px 0 24px 0;">
-        <div style="font-size:13px;color:#196f3d;font-weight:600;margin-bottom:8px;">🏁 המסקנה שלנו — תרגיל מהיר</div>
-        <div style="font-size:18px;line-height:1.7;color:#1c1c1c;">
-        "המודל שלנו הוא <b>מודל רגרסיה</b> ונשתמש ב-<b style="color:#c0392b;">RMSE</b> כי משתנה היעד
-        (<em>TCI</em>) הוא מספר רציף (1–10), והמדד מעניש בחומרה טעויות חיזוי גדולות (בריבוע) —
-        מה שמבטיח בטיחות להולכי הרגל ומונע שליחתם לרחוב לוהט שנחזה בטעות כמוצל."
-        </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        💬 **סוכן חכם** — הקלידי בקשה חופשית כמו *"מכיכר רבין לשוק הכרמל ב-3 אחה״צ"*
+        והסוכן ימלא את הפרטים אוטומטית. לחצי **"שלח לסוכן 🤖"**.
 
-    # ── שלושת השלבים ───────────────────────────────────────────────────────
-    st.markdown("#### 🧠 ניתוח לפי 3 שלבים")
+        📍 **ידנית** — הקלידי כתובת מוצא ויעד, בחרי תאריך ושעת יציאה (בהפרשים של 30 דקות),
+        ובחרי את רמת העדפת הצל:
 
-    step_col1, step_col2, step_col3 = st.columns(3)
+        | אפשרות | משמעות |
+        |--------|---------|
+        | 🚶 קצר בעיקר | מסלול קצר, מינימום התחשבות בצל |
+        | 🌤 מאוזן | איזון בין אורך לנוחות |
+        | 🌿 מוצל בעיקר | מעדיף רחובות מוצלים וירוקים |
+        | 🌳 צל מקסימלי | הצל מנצח הכל, גם במחיר מסלול ארוך יותר |
 
-    with step_col3:
-        st.markdown(
-            """
-            <div style="background:#fef9e7;border:2px solid #d4a017;border-radius:10px;padding:18px 16px;min-height:230px;">
-            <div style="font-size:22px;font-weight:700;color:#d4a017;margin-bottom:6px;">01</div>
-            <div style="font-size:16px;font-weight:700;color:#1c1c1c;margin-bottom:10px;">מה הפלט של המודל?</div>
-            <div style="font-size:13px;color:#444;line-height:1.7;">
-            <b>→ רגרסיה.</b><br>
-            הפלט הוא <em>TCI</em> — מספר רציף בסקאלה 1 עד 10.<br>
-            אנחנו רוצות לדעת <em>כמה</em> מוצל הרחוב, לא רק "מוצל / לא מוצל",
-            כדי שהמשקולות על גרף Dijkstra יהיו מדויקות ורציפות.
-            </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        סמני ✅ **"הצג גם מסלול מהיר להשוואה"** כדי לראות את שני המסלולים זה לצד זה,
+        לחצי **"מצא מסלול 🗺️"** — וסיימתן!
 
-    with step_col2:
-        st.markdown(
-            """
-            <div style="background:#fef9e7;border:2px solid #d4a017;border-radius:10px;padding:18px 16px;min-height:230px;">
-            <div style="font-size:22px;font-weight:700;color:#d4a017;margin-bottom:6px;">02</div>
-            <div style="font-size:16px;font-weight:700;color:#1c1c1c;margin-bottom:10px;">מה עלות של טעות?</div>
-            <div style="font-size:13px;color:#444;line-height:1.7;">
-            <b>→ טעות גדולה = סיכון בטיחותי.</b><br>
-            אם המודל יחזה TCI=4 (נוח) לרחוב שהוא בפועל 9 (לוהט וחשוף),
-            אנחנו מסכנות אוכלוסיות פגיעות כמו קשישים ולבקנים.<br>
-            <b>RMSE</b> מעלה טעויות בריבוע — מה שנותן עונש ענק לטעויות גדולות ומכריח את המודל להיות שמרן.
-            </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with step_col1:
-        st.markdown(
-            """
-            <div style="background:#fef9e7;border:2px solid #d4a017;border-radius:10px;padding:18px 16px;min-height:230px;">
-            <div style="font-size:22px;font-weight:700;color:#d4a017;margin-bottom:6px;">03</div>
-            <div style="font-size:16px;font-weight:700;color:#1c1c1c;margin-bottom:10px;">איך נראה משתנה היעד?</div>
-            <div style="font-size:13px;color:#444;line-height:1.7;">
-            <b>→ מתפרש על פני כל הטווח</b><br>
-            <b>RMSE</b> נותן אינדיקציה אמיתית על איכות החיזוי בכל הטווח —
-            בניגוד למדדי סיווג שהיו מאבדות את הרזולוציה הרציפה.
-            </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
-
-    # ── טבלת מדדים ──────────────────────────────────────────────────────────
-    with st.expander("📊 מבט מהיר — טבלת המדדים הנפוצים"):
-        st.markdown(
-            """
-            | סוג | מדד | מתי משתמשים |
-            |-----|-----|-------------|
-            | רגרסיה | **RMSE** ✅ | טעויות באחידות היעד; מעניש טעויות גדולות (בריבוע) |
-            | רגרסיה | MAE | עמיד לחריגים, פשוט להסביר למשתמש |
-            | סיווג | Accuracy | רק כשהמחלקות מאוזנות (50/50) |
-            | סיווג | F1 | מחלקות לא מאוזנות — מאזן Precision ו-Recall |
-            | סיווג | Recall | כש"החמצה" מסוכנת (רפואה, בטיחות) |
-            """
-        )
-        st.info("💡 אנחנו בשורת **רגרסיה + RMSE** — כי TCI הוא מספר רציף ולא קטגוריה.")
-
-    st.divider()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # M3 — תוצאות: השוואת מודלים ובחירת מנצח (נטען מ-data/model_results.json)
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("🏆 M3 — תוצאות: השוואת מודלים ובחירת מנצח")
-    _res = load_model_results()
-    if _res is None:
-        st.warning("⚠️ אין תוצאות שמורות — הריצו `python -m src.model` ליצירת `data/model_results.json`.")
-    else:
-        st.caption(
-            f"פיצול: {_res['rows']['train']:,} train / {_res['rows']['test']:,} test · "
-            f"KPI: RMSE (נמוך=טוב) · נמדד על test בלבד"
-        )
-        _tbl = pd.DataFrame(_res["table"]).rename(
-            columns={"model": "מודל", "rmse": "RMSE (test)", "r2": "R² (test)"}
-        )
-        st.dataframe(_tbl, hide_index=True, use_container_width=True)
-
-        _ratio = round(_res["baseline_mean_rmse"] / _res["winner_rmse"], 1)
-        st.success(
-            f"🏆 **המנצח: {_res['winner']}** — RMSE={_res['winner_rmse']}, R²={_res['winner_r2']} · "
-            f"מנצח את רצפת ה-baseline ({_res['baseline_mean_rmse']}) פי {_ratio}."
-        )
-
-        st.markdown(
-            """
-            **למה נבחר Random Forest?**
-            - **מנצח את הרצפה** (DummyRegressor שמנבא ממוצע) בפער עצום — מוכיח שהפיצ'רים נושאים מידע.
-            - **תופס אי-לינאריות ואינטראקציות** (sun × canopy × building) שמודל לינארי מפספס —
-              לכן ה-RMSE שלו נמוך מ-Linear ומ-Decision Tree בודד.
-            - **יציב**: ב-5-fold cross-validation קיבל RMSE 0.13 ± 0.01, ומרסן את ה-overfit
-              שעץ בודד מפגין (train RMSE=0 אך test 0.21).
-            """
-        )
-        if _res.get("importances"):
-            with st.expander("📊 חשיבות הפיצ'רים (RandomForest)"):
-                _imp = pd.DataFrame(_res["importances"], columns=["פיצ'ר", "importance"])
-                st.dataframe(_imp, hide_index=True, use_container_width=True)
-                st.caption(
-                    "sun_altitude שולט. temperature שומר חשיבות כי הוא פרוקסי ל-cloud_cover "
-                    "(קורלציה ≈ −0.99). shadow_angle = זווית בין כיוון השמש לכיוון הרחוב (0°=מקביל, 90°=ניצב). "
-                    "(קורלציה ≠ חשיבות)"
-                )
-
-        st.info(
-            "🔎 **מהימנות:** ה-R² הגבוה נובע מכך שיעד ה-TCI מחושב כרגע מנוסחה אנליטית "
-            "(יעד סינתטי) — המודל משחזר את הנוסחה. זה צעד ביניים מתוכנן; המבחן האמיתי "
-            "יגיע עם תוויות אמת מדודות."
-        )
-
-    st.divider()
-
-    # ── מפת דרכים ל-M3 ──────────────────────────────────────────────────────
-    st.subheader("🗺️ מפת הדרכים שלנו ל-M3")
-
-    rd_col1, rd_col2 = st.columns(2)
-
-    with rd_col2:
-        st.markdown("#### 1️⃣ Feature Engineering (שיפור עתידי)")
-        st.markdown(
-            """
-            - **Log-transform** ל-`canopy_area_m2` (Skewness שזוהה ב-EDA)
-            - חילוץ **`bearing`** (כיוון רחוב) מ-OSMnx להצלבה עם `sun_azimuth`,
-              לחישוב זווית הטלת צל מדויקת — *לא מומש ב-M3; מתוכנן להמשך*
-            """
-        )
-
-        st.markdown("#### 2️⃣ חלוקת הדאטה (בפועל)")
-        st.markdown(
-            """
-            - **80% train / 20% test**, `random_state=42` (שחזורי)
-            - פיצול **לפי שורה** — מתאים לניווט ברשת ידועה. מגבלה גלויה:
-              לא בודק הכללה לרחובות חדשים (שיפור עתידי: Spatial Split)
-            """
-        )
-
-    with rd_col1:
-        st.markdown("#### 3️⃣ Baseline (בפועל)")
-        st.markdown(
-            """
-            - **`DummyRegressor(mean)`** — מנבא ממוצע (RMSE≈1.77). כל מודל חייב לנצח אותו
-            - **LinearRegression** הוא מודל **מועמד** (לא baseline) — ראו טבלת התוצאות למעלה
-            """
-        )
-
-        st.markdown("#### 4️⃣ המודל המומלץ")
-        st.markdown(
-            """
-            - **RandomForestRegressor** — קל למימוש, יציב, אידיאלי לסיבוב הראשון
-            - מטרה מתקדמת: **XGBoost / LightGBM** — המלכים של דאטה טבלאי, מטפלים
-              אוטומטית באינטראקציות לא-ליניאריות (azimuth × bearing × building height)
-            """
-        )
-
-    st.markdown(
+        *\* מנוסח בלשון נקבה אך פונה לכולם*
         """
-        <div style="background:#eafaf1;border-right:6px solid #1e8449;padding:16px 20px;border-radius:8px;margin:14px 0 0 0;">
-        <div style="font-size:13px;color:#196f3d;font-weight:600;margin-bottom:6px;">⚙️ למה לא מודל ליניארי בלבד?</div>
-        <div style="font-size:14px;line-height:1.7;color:#1c1c1c;">
-        הנתונים הטבלאיים-גיאוגרפיים שלנו כוללים אינטראקציות לא-ליניאריות קיצוניות —
-        למשל: "אם השעה 13:00 <em>וגם</em> הרחוב פונה לצפון <em>וגם</em> יש בניין גבוה — אז יש צל".
-        מודלים ליניאריים לא יזהו את הצמדים האלה. מודלים מבוססי עצים (Random Forest / XGBoost) כן.
-        </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
     )
 
     st.divider()
 
-    # ── מדד הנוחות התרמית ──────────────────────────────────────────────────
-    st.subheader("🌡️ מדד הנוחות התרמית (TCI)")
-
-    tci_col1, tci_col2 = st.columns([1, 2])
-    with tci_col1:
+    with st.expander("🗄️ מקורות נתונים"):
         st.markdown(
             """
-            <div style="background:#fdecea;border-right:6px solid #c0392b;padding:16px 18px;border-radius:8px;">
-            <div style="font-size:13px;color:#7b241c;font-weight:600;margin-bottom:8px;">ציון 1–10 לכל קשת ברחוב</div>
-            <div style="font-size:13px;color:#444;line-height:1.8;">
-            <b style="color:#1e8449;">1</b> = מוצל / נוח מאוד<br>
-            <b style="color:#d35400;">5</b> = חשיפה חלקית<br>
-            <b style="color:#c0392b;">10</b> = חשיפה מלאה לשמש
+            | שכבה | מקור |
+            |------|------|
+            | מבנים | עיריית ת"א (opendata.tel-aviv.gov.il) |
+            | חופת עצים | מפ"י (data.gov.il) |
+            | רשת רחובות | OSMnx |
+            | מזג אוויר | Open-Meteo API |
+            """
+        )
+
+    st.divider()
+
+    with st.expander("🎯 M3 — בחירת KPI: למה RMSE?"):
+        st.markdown(
+            """
+            <div style="background:#eafaf1;border-right:6px solid #1e8449;padding:20px 24px;border-radius:8px;margin:12px 0 24px 0;">
+            <div style="font-size:13px;color:#196f3d;font-weight:600;margin-bottom:8px;">🏁 המסקנה שלנו — תרגיל מהיר</div>
+            <div style="font-size:18px;line-height:1.7;color:#1c1c1c;">
+            "המודל שלנו הוא <b>מודל רגרסיה</b> ונשתמש ב-<b style="color:#c0392b;">RMSE</b> כי משתנה היעד
+            (<em>TCI</em>) הוא מספר רציף (1–10), והמדד מעניש בחומרה טעויות חיזוי גדולות (בריבוע) —
+            מה שמבטיח בטיחות להולכי הרגל ומונע שליחתם לרחוב לוהט שנחזה בטעות כמוצל."
             </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-    with tci_col2:
-        st.markdown(
-            """
-            **7 פיצ'רים במודל:**
 
-            | פיצ'ר | תיאור |
-            |-------|-------|
-            | `sun_altitude` | גובה השמש בשמיים (PySolar) |
-            | `building_height` | ממוצע גבהי המבנים הסמוכים |
-            | `canopy_ratio` | יחס חופת עצים לאורך הקשת |
-            | `cloud_cover` | כיסוי עננים (%) |
-            | `temperature` | טמפרטורה (°C) — פרוקסי ל-cloud_cover |
-            | `humidity` | לחות יחסית (%) |
-            | `shadow_cov` | כיסוי-צל מבנים [0–1] — אחוז הקשת המכוסה בצל (מחושב מראש) |
-            """
-        )
+        st.markdown("#### 🧠 ניתוח לפי 3 שלבים")
+
+        step_col1, step_col2, step_col3 = st.columns(3)
+
+        with step_col3:
+            st.markdown(
+                """
+                <div style="background:#fef9e7;border:2px solid #d4a017;border-radius:10px;padding:18px 16px;min-height:230px;">
+                <div style="font-size:22px;font-weight:700;color:#d4a017;margin-bottom:6px;">01</div>
+                <div style="font-size:16px;font-weight:700;color:#1c1c1c;margin-bottom:10px;">מה הפלט של המודל?</div>
+                <div style="font-size:13px;color:#444;line-height:1.7;">
+                <b>→ רגרסיה.</b><br>
+                הפלט הוא <em>TCI</em> — מספר רציף בסקאלה 1 עד 10.<br>
+                אנחנו רוצות לדעת <em>כמה</em> מוצל הרחוב, לא רק "מוצל / לא מוצל",
+                כדי שהמשקולות על גרף Dijkstra יהיו מדויקות ורציפות.
+                </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with step_col2:
+            st.markdown(
+                """
+                <div style="background:#fef9e7;border:2px solid #d4a017;border-radius:10px;padding:18px 16px;min-height:230px;">
+                <div style="font-size:22px;font-weight:700;color:#d4a017;margin-bottom:6px;">02</div>
+                <div style="font-size:16px;font-weight:700;color:#1c1c1c;margin-bottom:10px;">מה עלות של טעות?</div>
+                <div style="font-size:13px;color:#444;line-height:1.7;">
+                <b>→ טעות גדולה = סיכון בטיחותי.</b><br>
+                אם המודל יחזה TCI=4 (נוח) לרחוב שהוא בפועל 9 (לוהט וחשוף),
+                אנחנו מסכנות אוכלוסיות פגיעות כמו קשישים ולבקנים.<br>
+                <b>RMSE</b> מעלה טעויות בריבוע — מה שנותן עונש ענק לטעויות גדולות ומכריח את המודל להיות שמרן.
+                </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with step_col1:
+            st.markdown(
+                """
+                <div style="background:#fef9e7;border:2px solid #d4a017;border-radius:10px;padding:18px 16px;min-height:230px;">
+                <div style="font-size:22px;font-weight:700;color:#d4a017;margin-bottom:6px;">03</div>
+                <div style="font-size:16px;font-weight:700;color:#1c1c1c;margin-bottom:10px;">איך נראה משתנה היעד?</div>
+                <div style="font-size:13px;color:#444;line-height:1.7;">
+                <b>→ מתפרש על פני כל הטווח</b><br>
+                <b>RMSE</b> נותן אינדיקציה אמיתית על איכות החיזוי בכל הטווח —
+                בניגוד למדדי סיווג שהיו מאבדות את הרזולוציה הרציפה.
+                </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
+
+        with st.expander("📊 מבט מהיר — טבלת המדדים הנפוצים"):
+            st.markdown(
+                """
+                | סוג | מדד | מתי משתמשים |
+                |-----|-----|-------------|
+                | רגרסיה | **RMSE** ✅ | טעויות באחידות היעד; מעניש טעויות גדולות (בריבוע) |
+                | רגרסיה | MAE | עמיד לחריגים, פשוט להסביר למשתמש |
+                | סיווג | Accuracy | רק כשהמחלקות מאוזנות (50/50) |
+                | סיווג | F1 | מחלקות לא מאוזנות — מאזן Precision ו-Recall |
+                | סיווג | Recall | כש"החמצה" מסוכנת (רפואה, בטיחות) |
+                """
+            )
+            st.info("💡 אנחנו בשורת **רגרסיה + RMSE** — כי TCI הוא מספר רציף ולא קטגוריה.")
+
+    st.divider()
+
+    with st.expander("🏆 M3 — תוצאות: השוואת מודלים ובחירת מנצח"):
+        _res = load_model_results()
+        if _res is None:
+            st.warning("⚠️ אין תוצאות שמורות — הריצו `python -m src.model` ליצירת `data/model_results.json`.")
+        else:
+            st.caption(
+                f"פיצול: {_res['rows']['train']:,} train / {_res['rows']['test']:,} test · "
+                f"KPI: RMSE (נמוך=טוב) · נמדד על test בלבד"
+            )
+            _tbl = pd.DataFrame(_res["table"]).rename(
+                columns={"model": "מודל", "rmse": "RMSE (test)", "r2": "R² (test)"}
+            )
+            st.dataframe(_tbl, hide_index=True, use_container_width=True)
+
+            _ratio = round(_res["baseline_mean_rmse"] / _res["winner_rmse"], 1)
+            st.success(
+                f"🏆 **המנצח: {_res['winner']}** — RMSE={_res['winner_rmse']}, R²={_res['winner_r2']} · "
+                f"מנצח את רצפת ה-baseline ({_res['baseline_mean_rmse']}) פי {_ratio}."
+            )
+
+            st.markdown(
+                """
+                **למה נבחר Random Forest?**
+                - **מנצח את הרצפה** (DummyRegressor שמנבא ממוצע) בפער עצום — מוכיח שהפיצ'רים נושאים מידע.
+                - **תופס אי-לינאריות ואינטראקציות** (sun × canopy × building) שמודל לינארי מפספס —
+                  לכן ה-RMSE שלו נמוך מ-Linear ומ-Decision Tree בודד.
+                - **יציב**: ב-5-fold cross-validation קיבל RMSE 0.13 ± 0.01, ומרסן את ה-overfit
+                  שעץ בודד מפגין (train RMSE=0 אך test 0.21).
+                """
+            )
+            if _res.get("importances"):
+                with st.expander("📊 חשיבות הפיצ'רים (RandomForest)"):
+                    _imp = pd.DataFrame(_res["importances"], columns=["פיצ'ר", "importance"])
+                    st.dataframe(_imp, hide_index=True, use_container_width=True)
+                    st.caption(
+                        "sun_altitude שולט. temperature שומר חשיבות כי הוא פרוקסי ל-cloud_cover "
+                        "(קורלציה ≈ −0.99). shadow_angle = זווית בין כיוון השמש לכיוון הרחוב (0°=מקביל, 90°=ניצב). "
+                        "(קורלציה ≠ חשיבות)"
+                    )
+
+            st.info(
+                "🔎 **מהימנות:** ה-R² הגבוה נובע מכך שיעד ה-TCI מחושב כרגע מנוסחה אנליטית "
+                "(יעד סינתטי) — המודל משחזר את הנוסחה. זה צעד ביניים מתוכנן; המבחן האמיתי "
+                "יגיע עם תוויות אמת מדודות."
+            )
+
+    st.divider()
+
+    with st.expander("🌡️ מדד הנוחות התרמית (TCI)"):
+        tci_col1, tci_col2 = st.columns([1, 2])
+        with tci_col1:
+            st.markdown(
+                """
+                <div style="background:#fdecea;border-right:6px solid #c0392b;padding:16px 18px;border-radius:8px;">
+                <div style="font-size:13px;color:#7b241c;font-weight:600;margin-bottom:8px;">ציון 1–10 לכל קשת ברחוב</div>
+                <div style="font-size:13px;color:#444;line-height:1.8;">
+                <b style="color:#1e8449;">1</b> = מוצל / נוח מאוד<br>
+                <b style="color:#d35400;">5</b> = חשיפה חלקית<br>
+                <b style="color:#c0392b;">10</b> = חשיפה מלאה לשמש
+                </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with tci_col2:
+            st.markdown(
+                """
+                **7 פיצ'רים במודל:**
+
+                | פיצ'ר | תיאור |
+                |-------|-------|
+                | `sun_altitude` | גובה השמש בשמיים (PySolar) |
+                | `building_height` | ממוצע גבהי המבנים הסמוכים |
+                | `canopy_ratio` | יחס חופת עצים לאורך הקשת |
+                | `cloud_cover` | כיסוי עננים (%) |
+                | `temperature` | טמפרטורה (°C) — פרוקסי ל-cloud_cover |
+                | `humidity` | לחות יחסית (%) |
+                | `shadow_cov` | כיסוי-צל מבנים [0–1] — אחוז הקשת המכוסה בצל (מחושב מראש) |
+                """
+            )

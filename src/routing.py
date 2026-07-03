@@ -43,6 +43,8 @@ _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # bbox לOverpass: south,west,north,east
 _TA_OVERPASS_BBOX = f"({TA_BBOX[0]},{TA_BBOX[1]},{TA_BBOX[2]},{TA_BBOX[3]})"
 
+_PHOTON_URL = "https://photon.komoot.io/api"
+
 # cache ברמת המודול — נשמר לכל חיי התהליך, נמנע טעינה חוזרת (4.6s) בכל לחיצה
 _GRAPH_CACHE: nx.MultiDiGraph | None = None
 
@@ -197,6 +199,29 @@ def _overpass_search(name: str) -> tuple | None:
     return None
 
 
+def _photon_search(query: str) -> tuple | None:
+    """Photon geocoder (komoot, OSM-based, fuzzy) — fallback שלישי לשמות מקומות לא מדויקים."""
+    params = {
+        "q": query,
+        "limit": 5,
+        "lat": TA_LAT,
+        "lon": TA_LON,
+        "zoom": 14,
+        "lang": "he",
+    }
+    try:
+        resp = requests.get(_PHOTON_URL, params=params,
+                            headers=_NOMINATIM_HEADERS, timeout=6)
+        for feat in resp.json().get("features", []):
+            coords = feat["geometry"]["coordinates"]
+            lon, lat = float(coords[0]), float(coords[1])
+            if TA_BBOX[0] <= lat <= TA_BBOX[2] and TA_BBOX[1] <= lon <= TA_BBOX[3]:
+                return lat, lon
+    except Exception:
+        pass
+    return None
+
+
 def geocode_address(address: str) -> tuple:
     """
     ממיר כתובת טקסטואלית (עברית או אנגלית) לקואורדינטות (lat, lon).
@@ -232,6 +257,12 @@ def geocode_address(address: str) -> tuple:
                 lat, lon = _pt
                 if TA_BBOX[0] <= lat <= TA_BBOX[2] and TA_BBOX[1] <= lon <= TA_BBOX[3]:
                     return lat, lon
+
+    # Photon: fuzzy geocoding — מכסה שמות חנויות/מסעדות ואיות חלופי שלא ב-OSM
+    for _pq in dict.fromkeys([address, f"{address} תל אביב"]):
+        _ph = _photon_search(_pq)
+        if _ph is not None:
+            return _ph
 
     raise ValueError(
         f"המיקום '{address}' לא נמצא באזור תל אביב — "
