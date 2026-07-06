@@ -60,8 +60,10 @@ def test_shade_level_coercion():
 def test_recommendation_coercion():
     assert _coerce_recommendation(None) is None
     assert _coerce_recommendation("   ") is None
-    assert len(_coerce_recommendation("א" * 150)) == 100
-    assert _coerce_recommendation("🌙 חשוך") == "🌙 חשוך"
+    assert _coerce_recommendation("night") == "🌙 שעות לילה — מסלול מהיר מומלץ"
+    assert _coerce_recommendation("HOT") == "☀️ חם ושמשי — בחרתי צל מקסימלי"
+    assert _coerce_recommendation("warm") == "🌤 מזג אוויר חם — בחרתי מסלול מוצל"
+    assert _coerce_recommendation("🌙 חשוך משובש") is None   # טקסט חופשי משובש → None
 
 
 def test_empty_text_returns_error_without_network():

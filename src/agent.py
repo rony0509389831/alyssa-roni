@@ -30,11 +30,11 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         f"{context_str}\n"
         "Rules for shade_level when user does NOT explicitly state a preference:\n"
         "- sun_altitude ≤ 0 (night/below horizon): shade_level='short', mode='fast', "
-        "recommendation='🌙 חשוך — הניווט יעבור למסלול מהיר'\n"
+        "recommendation='night'\n"
         "- temp > 32 AND cloud_cover < 25 AND sun_altitude > 25: shade_level='max', "
-        "recommendation='☀️ חם ושמשי — בחרתי צל מקסימלי'\n"
+        "recommendation='hot'\n"
         "- temp > 27 AND cloud_cover < 50: shade_level='shaded', "
-        "recommendation='🌤 מזג אוויר חם — בחרתי מסלול מוצל'\n"
+        "recommendation='warm'\n"
         "- otherwise: shade_level=null, recommendation=null (mild or no data)\n"
         "If user DID explicitly state a shade preference → respect it exactly, set recommendation=null.\n"
     ) if context_str else ""
@@ -63,12 +63,13 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         '    "shaded"   = prefer shaded routes ("מוצל", "בצל", "ירוק", "cool", "green route", "shaded").\n'
         '    "max"      = maximum shade even at cost of detours ("הכי מוצל", "צל מקסימלי", "max shade").\n'
         '    null       = let conditions decide (see rules below), or no preference data.\n'
-        '  "recommendation" - short Hebrew string (≤80 chars) explaining an auto-chosen shade_level, '
-        'or null if the user was explicit or conditions are mild/unknown.\n'
+        '  "recommendation" - ONE of these exact lowercase codes when you auto-choose a shade_level '
+        'from the conditions: "night", "hot", "warm". Use null if the user was explicit about shade '
+        'preference, or conditions are mild/unknown. Output ONLY the code word, never a sentence.\n'
         + _ctx_block
         + "ALWAYS: Hours outside the app's range 6-19 (e.g. '22:00', '23:00', '5 בבוקר', '2 לילה') → "
         "set hour=null, mode='fast', shade_level='short', "
-        "recommendation='🌙 שעות לילה — מסלול מהיר מומלץ'. "
+        "recommendation='night'. "
         "This rule applies even if the hour is tomorrow or a future date.\n"
         "Convert times to 24h: 'שלוש אחר הצהריים'/'3pm' -> 15, 'שמונה בבוקר'/'8am' -> 8. "
         "IMPORTANT: Strip Hebrew grammatical prefixes attached to place names — "
@@ -83,7 +84,7 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         'Input: "מרוטשילד לכרמל מחרתיים ב-10 בבוקר"\n'
         f'Output: {{"origin": "רוטשילד", "destination": "שוק הכרמל", "hour": 10, "date": "{day2_str}", "mode": "shaded", "shade_level": null, "recommendation": null}}\n'
         'Input (conditions: sun_altitude=-5.0°, night/below horizon, temperature=24.0°C): "מרוטשילד לכיכר רבין"\n'
-        f'Output: {{"origin": "רוטשילד", "destination": "כיכר רבין", "hour": null, "date": null, "mode": "fast", "shade_level": "short", "recommendation": "🌙 חשוך — הניווט יעבור למסלול מהיר"}}\n'
+        f'Output: {{"origin": "רוטשילד", "destination": "כיכר רבין", "hour": null, "date": null, "mode": "fast", "shade_level": "short", "recommendation": "night"}}\n'
         'Input: "אני רוצה ללכת מרוטשילד לכיכר רבין"\n'
         f'Output: {{"origin": "רוטשילד", "destination": "כיכר רבין", "hour": null, "date": null, "mode": "shaded", "shade_level": null, "recommendation": null}}'
     )
@@ -130,15 +131,20 @@ def _coerce_shade_level(value):
     return None
 
 
-_MAX_REC_LEN = 100
+# קוד תרחיש מה-LLM → מחרוזת עברית קבועה ונקייה. ה-LLM מחזיר קוד ASCII קצר
+# (לא עברית חופשית) — כדי למנוע גם שבירת JSON וגם עברית משובשת שהמודל מייצר.
+_REC_TEXT = {
+    "night": "🌙 שעות לילה — מסלול מהיר מומלץ",
+    "hot":   "☀️ חם ושמשי — בחרתי צל מקסימלי",
+    "warm":  "🌤 מזג אוויר חם — בחרתי מסלול מוצל",
+}
 
 
 def _coerce_recommendation(value) -> str | None:
-    """מחזיר מחרוזת קצרה או None — מגן מפני hallucination של LLM."""
+    """ממפה קוד תרחיש (night/hot/warm) למחרוזת עברית קבועה; None אם לא קוד מוכר."""
     if value is None:
         return None
-    s = str(value).strip()
-    return s[:_MAX_REC_LEN] if s else None
+    return _REC_TEXT.get(str(value).strip().lower())
 
 
 def normalize_place_name(address: str, api_key: str) -> str | None:
@@ -266,25 +272,44 @@ def extract_route_params(
         from groq import Groq                  # ייבוא עצל — לא לשבור את האפליקציה אם הספרייה חסרה
     except ImportError:
         return {"error": "ספריית groq לא מותקנת — הריצו `pip install groq`."}
+    _messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_text},
+    ]
     try:
         client = Groq(api_key=api_key)
-        resp = client.chat.completions.create(
-            model=MODEL,
-            temperature=0,                      # JSON יציב, לא "יצירתי"
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_text},
-            ],
-        )
-        raw = _parse_json(resp.choices[0].message.content)
+        raw = None
+        # json_object המחמיר של Groq נכשל לפעמים על המלצות עברית/אימוג'י
+        # (json_validate_failed) — במיוחד בבקשות לילה. מנסים עד 3 פעמים, ואם עדיין
+        # נכשל — נופלים לקריאה בלי המצב המחמיר, עם פרסור regex גמיש.
+        for _attempt in range(3):
+            try:
+                resp = client.chat.completions.create(
+                    model=MODEL, temperature=0,
+                    response_format={"type": "json_object"},
+                    messages=_messages,
+                )
+                raw = _parse_json(resp.choices[0].message.content)
+                break
+            except json.JSONDecodeError:
+                continue                        # פלט לא-תקין — ניסיון נוסף
+            except Exception as _ce:
+                _m = str(_ce).lower()
+                if "json_validate" in _m or "failed to generate json" in _m:
+                    continue                    # Groq דחה JSON — ניסיון נוסף
+                raise                           # auth/rate/network אמיתי — לא לנסות שוב
+        if raw is None:
+            resp = client.chat.completions.create(
+                model=MODEL, temperature=0, messages=_messages,
+            )
+            raw = _parse_json(resp.choices[0].message.content)
     except json.JSONDecodeError:
         return {"error": _ERROR_MSG}
     except Exception as _exc:
         _msg = str(_exc).lower()
         if any(k in _msg for k in ("auth", "api_key", "invalid_api", "401", "403", "unauthorized")):
             return {"error": "⚠️ מפתח GROQ_API_KEY לא תקין — בדקו ב-`.streamlit/secrets.toml`"}
-        if any(k in _msg for k in ("rate", "429", "too many", "quota")):
+        if any(k in _msg for k in ("429", "too many", "quota", "rate limit", "rate_limit")):
             return {"error": "⚠️ Groq API מוגבלת — נסו שוב עוד כמה שניות"}
         if any(k in _msg for k in ("model", "404", "not found", "decommission")):
             return {"error": f"⚠️ מודל {MODEL!r} אינו זמין ב-Groq — נסו לשנות ל-`llama-3.1-70b-versatile`"}
