@@ -147,7 +147,8 @@ def select_winner(results: dict):
     return name, results[name]
 
 
-# נתיב ברירת מחדל למודל השמור — משותף בין model.py (שמירה) ל-app.py (טעינה)
+# נתיב ברירת מחדל למודל השמור. app.py לא מייבא את הקבוע הזה — הוא מגדיר עצמאית
+# אותה מחרוזת מילולית כברירת מחדל משלו; הסנכרון הוא בהסכמה בלבד, לא ע"י import.
 MODEL_PATH = Path("data/tci_model.joblib")
 
 

@@ -3,6 +3,7 @@
 Fallback: קריאה מ-data/climate_fallback.json אם ה-API לא זמין.
 """
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -23,7 +24,9 @@ _OPEN_METEO_URL = (
 def get_current_weather() -> dict:
     """מחזיר dict עם temperature, humidity, cloud_cover, source ('live'/'fallback'/'default')."""
     try:
+        _t0 = time.monotonic()
         resp = requests.get(_OPEN_METEO_URL, timeout=_TIMEOUT)
+        print(f"[TIMING] Open-Meteo weather: {time.monotonic() - _t0:.2f}s", flush=True)
         resp.raise_for_status()
         cur = resp.json()["current"]
         return {

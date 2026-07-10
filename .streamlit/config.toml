@@ -1,0 +1,30 @@
+[theme]
+base = "light"
+primaryColor = "#0E7C66"
+backgroundColor = "#FFFBF2"
+secondaryBackgroundColor = "#F1EEE3"
+textColor = "#1F2A22"
+font = "sans-serif"
+
+# מיושר מול _tci_color() הקיים ב-src/routing.py — אותה פלטה בכל האפליקציה
+greenColor = "#27AE60"
+orangeColor = "#F39C12"
+redColor = "#C0392B"
+blueColor = "#2980B9"
+
+showWidgetBorder = true
+baseRadius = "large"
+
+# גרסת כהה — משמשת רכיבי Streamlit מקוריים שלא מעוצבים ישירות ב-CSS (app.py).
+# עצמאית מהטוגל הידני של app.py (שמפעיל את --data-theme ל-CSS המותאם שלנו);
+# זו "רשת ביטחון" נוספת שעוקבת אחרי הגדרת מערכת ההפעלה.
+[theme.dark]
+primaryColor = "#35C9A0"
+backgroundColor = "#14231D"
+secondaryBackgroundColor = "#1B2E27"
+textColor = "#F2EFE6"
+
+[client]
+# הוסר toolbarMode="minimal": במצב הזה Streamlit לא מרנדר בכלל את ה-StatusWidget
+# (כולל באנר "Source file changed → Rerun") כשאין menu_items מותאמים באפליקציה —
+# הסתרת ה-hamburger/Deploy מתבצעת רק ב-CSS (ר' app.py), לא כאן.

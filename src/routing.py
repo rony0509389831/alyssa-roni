@@ -8,8 +8,10 @@
 from pathlib import Path
 
 import math
+import random
 import re
 import tempfile
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -29,12 +31,33 @@ except ImportError:
 # מפנה את cache ה-geocoding לתיקיית הטמפ' של המערכת, לא לתיקיית הפרויקט
 ox.settings.cache_folder = tempfile.gettempdir()
 
-TA_LAT, TA_LON = 32.0853, 34.7818
+# מדויק (למרכוז מפה/גיאוקוד) — שונה בכוונה מ-32.08/34.77 הגס שב-weather.py/data.py/
+# precompute_shadow.py (מספיק לחישוב זווית-שמש). שם נבדל כדי לא לבלבל בין השניים.
+TA_LAT_PRECISE, TA_LON_PRECISE = 32.0853, 34.7818
 TA_BBOX = (32.02, 34.73, 32.15, 34.85)   # (lat_min, lon_min, lat_max, lon_max)
 GRAPH_PATH = Path("data/tel_aviv_walk.graphml")
 WALK_SPEED_MPM = 80  # מטר לדקה — לחיזוי זמן הליכה כ-fallback
 
 _OSRM_BASE = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
+
+
+def _log_timing(label: str, elapsed: float) -> None:
+    """רשת ביטחון לאבחון איטיות — מדפיס זמן קריאה חיצונית/כבדה ל-stdout
+    (נראה בטרמינל שמריץ streamlit run). לא משפיע על הלוגיקה — וקריטי:
+    כשל בהדפסה עצמה (למשל קונסולת Windows עם קידוד שלא תומך בעברית,
+    cp1252) נבלע בשקט כאן ולעולם לא יזלוג כ-exception החוצה, כדי שלוג
+    אבחון לא יהפוך בטעות חיפוש מוצלח לכישלון geocoding.
+    """
+    msg = f"[TIMING] {label}: {elapsed:.2f}s"
+    try:
+        print(msg, flush=True)
+    except Exception:
+        # קונסולה שלא תומכת בעברית (למשל cp1252 ב-Windows) — עדיין נדפיס
+        # גרסה בטוחה-ASCII במקום לוותר על השורה לגמרי.
+        try:
+            print(msg.encode("ascii", "backslashreplace").decode("ascii"), flush=True)
+        except Exception:
+            pass
 
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _NOMINATIM_HEADERS = {"User-Agent": "SHADY-TelAviv-Navigator/1.0"}
@@ -163,8 +186,10 @@ def _nominatim_search(query: str) -> tuple | None:
         "bounded": 0,
         "accept-language": "he,en",
     }
+    _t0 = time.monotonic()
     resp = requests.get(_NOMINATIM_URL, params=params,
                         headers=_NOMINATIM_HEADERS, timeout=10)
+    _log_timing(f"Nominatim '{query}'", time.monotonic() - _t0)
     data = resp.json()
     if data:
         return float(data[0]["lat"]), float(data[0]["lon"])
@@ -183,12 +208,14 @@ def _overpass_search(name: str) -> tuple | None:
         f"out center 1;"
     )
     try:
+        _t0 = time.monotonic()
         resp = requests.post(
             _OVERPASS_URL,
             data={"data": query},
             headers=_NOMINATIM_HEADERS,
             timeout=12,
         )
+        _log_timing(f"Overpass '{name}'", time.monotonic() - _t0)
         for el in resp.json().get("elements", []):
             lat = el.get("lat") or el.get("center", {}).get("lat")
             lon = el.get("lon") or el.get("center", {}).get("lon")
@@ -204,14 +231,16 @@ def _photon_search(query: str) -> tuple | None:
     params = {
         "q": query,
         "limit": 5,
-        "lat": TA_LAT,
-        "lon": TA_LON,
+        "lat": TA_LAT_PRECISE,
+        "lon": TA_LON_PRECISE,
         "zoom": 14,
         "lang": "he",
     }
     try:
+        _t0 = time.monotonic()
         resp = requests.get(_PHOTON_URL, params=params,
                             headers=_NOMINATIM_HEADERS, timeout=6)
+        _log_timing(f"Photon '{query}'", time.monotonic() - _t0)
         for feat in resp.json().get("features", []):
             coords = feat["geometry"]["coordinates"]
             lon, lat = float(coords[0]), float(coords[1])
@@ -222,13 +251,39 @@ def _photon_search(query: str) -> tuple | None:
     return None
 
 
-def geocode_address(address: str) -> tuple:
+# "הידעת" — מוצגים לצד הודעות ההתקדמות בזמן חיפוש הכתובת (השלב עם הזמן הכי
+# משתנה, כי הוא תלוי ברשת) וגם ככרטיס פתיחה ב-app.py (נבחר פעם אחת ל-session).
+# מקור אמת יחיד — לא כפול בין הקבצים.
+_DID_YOU_KNOW = (
+    "הידעת? שטחי אספלט כהים חשופים לשמש מסוגלים להגיע לטמפרטורות קיצוניות של מעל 70 מעלות צלזיוס",
+    "הידעת? הבדל הטמפרטורה של פני השטח בין מדרכה בשמש למדרכה מוצלת באותו רחוב בדיוק יכול להגיע לעד 20 עד 30 מעלות צלזיוס",
+    "הידעת? מחקרים מצאו שרחובות המעוצבים עם רצף חופת עצים צפופה ומחוברת מצליחים להוריד את טמפרטורת האוויר בסביבתם בעד 5 מעלות",
+    "הידעת? עצים רחבים ברחוב לא רק מקררים, אלא גם מסננים זיהום אוויר. חופת עצים צפופה לצד כבישים מפחיתה את חלקיקי הפיח והמזהמים בעד 30% עבור הולכי הרגל על המדרכה!",
+    "הידעת? הליכה בשמש גורמת לנו להאיץ את הקצב באופן לא מודע כדי לברוח מהחום, מה שמגביר את הדופק והזעה.",
+    "הידעת? חשיפה מצטברת לקרינת UV היא הגורם המרכזי ליותר מ-90% ממקרי סרטן העור הלא-מלנומיים ולרוב מקרי המלנומה.",
+    "הידעת? כוויות שמש מרובות בילדות ובגיל ההתבגרות מכפילות את הסיכון לפתח מלנומה בשלב מאוחר יותר בחיים.",
+    "הידעת? סרטן העור (שאינו מלנומה) הוא הסרטן הנפוץ ביותר בעולם ובפער עצום!",
+    "הידעת? בשיא הקיץ בישראל, קרינת ה-UV חזקה כל כך שדי ב-10 עד 15 דקות בלבד של חשיפה לשמש ללא הגנה כדי לגרום לנזק מצטבר לעור ולהעלות את הסיכון לסרטן.",
+    "הידעת? להגיד \"מלנומה\" ו\"סרטן עור\" זה לא אותו דבר! בעוד שסרטני עור רגילים (BCC/SCC) הם הנפוצים בעולם ומתפתחים לאט, מלנומה מתחילה בתאי הפיגמנט (המלנוציטים) ויכולה לשלוח גרורות במהירות",
+    "הידעת? מהירות ההליכה הממוצעת של אדם בוגר בקצב רגיל ברחוב נעה בין 4.5 קמ\"ש ל-4.9 קמ\"ש.",
+    "הידעת? וטרינרים ממליצים להוציא כלבים לטיול של 30 דקות עד שעתיים במצטבר בכל יום",
+    "הידעת? מכל 5 אנשים בארה\"ב יפתח סרטן עור במהלך חייו.",
+    "הידעת? רוב האנשים מורחים רק חצי מהכמות הנדרשת של קרם הגנה. כדי לקבל את ה-SPF שכתוב על האריזה, אתם צריכים למרוח כמות של כוס צ'ייסר מלאה לכל הגוף",
+    "הידעת? ההנחיה הרשמית היא להימרח בקרם הגנה מחדש כל שעתיים בדיוק",
+)
+
+
+def geocode_address(address: str, on_progress=None) -> tuple:
     """
     ממיר כתובת טקסטואלית (עברית או אנגלית) לקואורדינטות (lat, lon).
 
     שלב 1 — Nominatim (3 צורות שאילתה).
     שלב 2 — Overpass API: fallback לשמות POI (ללא מספר בית) — מכסה כל ישות
              ב-OSM עם שם מדויק, כולל אלה שNominatim מחזיר בשם שונה מעט.
+    שלב 3 — Photon: fuzzy geocoder שסובל שגיאות כתיב וחיפוש לפי שם עסק/חנות.
+
+    on_progress(msg: str), אם הועבר, נקרא לפני כל שלב אמיתי בשרשרת ה-fallback
+    (Nominatim → Overpass → Photon) — לצורך הצגת סטטוס חי ל-UI (לא משפיע על הלוגיקה).
     """
     lower = address.lower()
     queries = []
@@ -237,6 +292,8 @@ def geocode_address(address: str) -> tuple:
         queries.append(f"{address}, ישראל")
     queries.append(address)
 
+    if on_progress:
+        on_progress(f"מחפש את '{address}'... ({random.choice(_DID_YOU_KNOW)})")
     for q in queries:
         try:
             point = _nominatim_search(q)
@@ -250,6 +307,8 @@ def geocode_address(address: str) -> tuple:
 
     # Nominatim לא מצא — ננסה Overpass לשמות POI (כתובת ללא ספרות = שם מקום)
     if not re.search(r"\d", address):
+        if on_progress:
+            on_progress(f"לא נמצא ב-Nominatim — מנסה Overpass עבור '{address}'...")
         _bare = address.strip().split(",")[0].strip()
         for _name in dict.fromkeys([address.strip(), _bare]):   # ללא כפילויות
             _pt = _overpass_search(_name)
@@ -259,6 +318,8 @@ def geocode_address(address: str) -> tuple:
                     return lat, lon
 
     # Photon: fuzzy geocoding — מכסה שמות חנויות/מסעדות ואיות חלופי שלא ב-OSM
+    if on_progress:
+        on_progress(f"מנסה חיפוש מקורב (Photon) עבור '{address}'...")
     for _pq in dict.fromkeys([address, f"{address} תל אביב"]):
         _ph = _photon_search(_pq)
         if _ph is not None:
@@ -283,7 +344,9 @@ def compute_route(origin_latlon: tuple, dest_latlon: tuple) -> dict:
     lon1, lat1 = origin_latlon[1], origin_latlon[0]
     lon2, lat2 = dest_latlon[1], dest_latlon[0]
     url = f"{_OSRM_BASE}/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
+    _t0 = time.monotonic()
     resp = requests.get(url, timeout=10)
+    _log_timing("OSRM route", time.monotonic() - _t0)
     resp.raise_for_status()
     data = resp.json()
     if data.get("code") != "Ok":
@@ -315,6 +378,7 @@ def compute_tci_weights(
     פונקציה נפרדת כדי לאפשר caching ב-Streamlit לפי תנאי מזג אוויר —
     אם השמש ומזג האוויר לא השתנו מאז הקריאה הקודמת, התוצאה חוזרת מה-cache (0ms).
     """
+    _t0 = time.monotonic()
     ef = pd.DataFrame({
         "u":               edges_df["u"].to_numpy(),
         "v":               edges_df["v"].to_numpy(),
@@ -375,6 +439,7 @@ def compute_tci_weights(
         weight_dict.setdefault((v, u), w)
         tci_by_uv.setdefault((v, u), tci_by_uv[(u, v)])
 
+    _log_timing("TCI weights (58k edges, CPU)", time.monotonic() - _t0)
     return weight_dict, tci_by_uv
 
 
@@ -408,6 +473,7 @@ def compute_shaded_route(
     if orig_node == dest_node:
         raise ValueError("נקודת המוצא והיעד קרובות מדי — נסה כתובות מרוחקות יותר")
 
+    _t0 = time.monotonic()
     try:
         path = nx.astar_path(
             G, orig_node, dest_node,
@@ -416,6 +482,7 @@ def compute_shaded_route(
         )
     except nx.NetworkXNoPath:
         raise ValueError("לא נמצא מסלול בין הנקודות שהוגדרו")
+    _log_timing("A* shaded route search", time.monotonic() - _t0)
 
     route_latlon = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in path]
 
@@ -479,6 +546,7 @@ def plan_route(
     graph: nx.MultiDiGraph = None,
     now: datetime = None,
     shade_factor: float = 1.0,
+    on_progress=None,
 ) -> dict:
     """
     מתזמר מסלול שלם מקלט גולמי — כל לוגיקת הניווט שהייתה ב-app.py, בלי Streamlit.
@@ -493,14 +561,27 @@ def plan_route(
     Dependency injection: geocode_fn / weather_fn / weights_fn מוזרקים מבחוץ כדי
     שה-caching של Streamlit יישאר ב-app.py — המודול הזה נשאר נקי מ-Streamlit.
 
+    on_progress(msg: str), אם הועבר (ברירת מחדל None — לא משנה שום התנהגות), נקרא
+    לפני כל שלב אמיתי בזרימה — כדי שממשק המשתמש יוכל להציג סטטוס חי (st.status)
+    במקום ספינר סתום יחיד, מבלי לשבור את חוזה ה-DI/testability הקיים.
+
     מחזיר dict:
       route_result — תוצאת המסלול (route_latlon, distance_m, duration_min, avg_tci?)
       color        — צבע לציור (ירוק=מוצל, כחול=מהיר)
       mode         — "shaded" / "fast" בפועל (אחרי fallbacks)
       fallback     — None / "model_missing" / "weights_missing" (סיבת נפילה למהיר)
     """
-    origin_latlon = geocode_fn(origin)
-    dest_latlon = geocode_fn(dest)
+    # on_progress מועבר positional (לא keyword) כדי שיתאים גם ל-geocode_fn
+    # מוזרק שהפרמטר הפנימי שלו נקרא אחרת (למשל _on_progress, לצורך cache-key
+    # ב-Streamlit) וגם ל-geocode_address המקורית. כשאין on_progress בכלל,
+    # geocode_fn נקראת בארגומנט יחיד בדיוק כמו קודם — אפס סיכון לפונקציות
+    # מוזרקות ישנות/פשוטות שלא מכירות את הפרמטר.
+    if on_progress:
+        origin_latlon = geocode_fn(origin, on_progress)
+        dest_latlon = geocode_fn(dest, on_progress)
+    else:
+        origin_latlon = geocode_fn(origin)
+        dest_latlon = geocode_fn(dest)
 
     result = {"color": "#2980b9", "mode": "fast", "fallback": None,
               "origin_latlon": origin_latlon, "dest_latlon": dest_latlon}
@@ -521,6 +602,8 @@ def plan_route(
         result["fallback"] = "night"
         return result
 
+    if on_progress:
+        on_progress("בודק תנאי מזג אוויר נוכחיים...")
     weather = weather_fn() if weather_fn is not None else {
         "cloud_cover": 30.0, "temperature": 27.0, "humidity": 65.0}
     if weather.get("cloud_cover", 0) >= 80:
@@ -538,6 +621,8 @@ def plan_route(
     shade_r = round(shade_factor * 2) / 2   # מעוגל ל-0.5 לצורך cache grouping
     wdict, tci_uv = (None, None)
     if weights_fn is not None:
+        if on_progress:
+            on_progress("מחשב חשיפה לשמש לכל הרחובות...")
         wdict, tci_uv = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, shade_r)
 
     if wdict is None:
@@ -545,6 +630,8 @@ def plan_route(
         result["fallback"] = "weights_missing"
         return result
 
+    if on_progress:
+        on_progress("מחשב את המסלול המוצל ביותר...")
     result["route_result"] = compute_shaded_route(
         origin_latlon, dest_latlon, wdict, tci_uv, G=graph)
     result["color"] = "#27ae60"
@@ -565,7 +652,7 @@ def build_route_map(
     tci_list: רשימת TCI פר-קשת לצביעת רמזור (ירוק/כתום/אדום).
     fast_result: תוצאת מסלול מהיר להשוואה (PolyLine כחול מקווקו).
     """
-    m = folium.Map(location=[TA_LAT, TA_LON], zoom_start=14, tiles="CartoDB positron")
+    m = folium.Map(location=[TA_LAT_PRECISE, TA_LON_PRECISE], zoom_start=14, tiles="CartoDB positron")
 
     pts = route_result["route_latlon"]
     if tci_list and len(tci_list) == len(pts) - 1:

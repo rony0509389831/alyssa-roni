@@ -216,3 +216,56 @@ baseline(mean) 1.772 → linear 0.400 → tree 0.210 → **forest 0.120 (R²=0.9
 ### קבצים שנגעו בהם
 - `app.py` (סליידר שעה + כיתוב שמש בטאב ניווט)
 - `src/routing.py` (`_preferred_edges`, `BOULEVARD_WEIGHT_FACTOR`, `CANOPY_STREET_THRESHOLD=0.35`, `BOULEVARD_CANOPY_FLOOR=0.24`; שקלול עם הנחת רחוב-ירוק; שמש לפי השעה הנבחרת)
+
+---
+
+## 2026-06-30 → 07-06 — M4: סוכן LLM, גיאוקודינג תלת-שלבי, ניתוק ניווט מ-Streamlit
+
+**מטרת המושבים:** להוסיף קלט טקסט חופשי (עברית/אנגלית) לטאב הניווט, ולנקות את השכבה ההנדסית מסביבו.
+
+### מה עשינו
+- **`src/agent.py` (חדש):** `extract_route_params()` — Groq LLM (`llama-3.3-70b-versatile`) מחלץ 7 שדות מטקסט חופשי (origin/destination/hour/date/mode/shade_level/recommendation). ה-LLM לא מחשב כלום, רק מתרגם. נרמול קידומות דקדוקיות עבריות (מ/ל/ב/ה) לפני geocoding. Fallback להודעת שגיאה ידידותית על כל כשלון (auth/network/JSON parse/שדות חסרים).
+- **Geocoding מדורג ב-3 שלבים** ב-`routing.py::geocode_address()`: Nominatim (3 וריאנטי שאילתה) → Overpass API (POIs ללא כתובת מדויקת) → Photon (fuzzy, סובל שגיאות כתיב).
+- **`shade_level`:** התווסף כשדה רביעי מהסוכן, ממופה ל-`shade_factor` שמעצים את `TCI^shade_factor` במשקל הניווט.
+- **"routingoutofstreamlit":** לוגיקת הניווט שהייתה קשורה ל-Streamlit (`st.cache_data` וכו') הועברה/נוקתה כך ש-`src/routing.py` נשאר טהור ו-testable (`plan_route` עם dependency injection — `geocode_fn`/`weather_fn`/`weights_fn`).
+- **GitHub Pages:** `docs/model_checks.html` פורסם כדוח-ולידציה סטטי (נוצר ידנית, אין סקריפט-מקור) + קישור מ-README.
+- **תיקון (2026-07-06):** כשלון `json_validate_failed` של Groq בבקשות-לילה — נוסף retry (עד 3 ניסיונות) עם נפילה ל-parsing גמיש בלי `response_format` מחמיר.
+
+### קבצים שנגעו בהם
+- `src/agent.py` (נוצר), `src/routing.py` (geocode_address תלת-שלבי, plan_route DI), `app.py` (טאב סוכן), `docs/model_checks.html` (נוצר), `README.md`, `runtime.txt` (Python 3.11 ל-Streamlit Cloud)
+
+---
+
+## 2026-07-09 → 07-10 — שדרוג UX מקיף + באגים + ניקוי repo + שיפור אלגוריתם הצל
+
+**מטרת המושבים:** לשדרג את חוויית המשתמש (עיצוב), לתקן כמה באגים שנצפו בשימוש, ואז — לבקשת המשתמשת — לעצור *לפני* ניקוי טכני ולוודא שהליבה האלגוריתמית (חישוב צל) חכמה מספיק.
+
+### 1. שדרוג עיצוב (עמוד ניווט)
+- זהות ויזואלית: הירו העליון עבר מ-`st.title` פשוט לכותרת ממותגת — **SHADY** (גרדיאנט ירוק→כתום, `background-clip:text`), סיסמה **STAY COOL :)** (המילה COOL בגוון shade במקום accent — "קריר" צריך להיראות קריר, לא אדום-חם), וכותרת-משנה "🚶‍♀️ ניווט חכם בתל אביב".
+- **Dark mode** מלא: טוקני CSS (`--bg/--ink/--shade/--sun/--accent`) עם 3 שכבות — `prefers-color-scheme` אוטומטי, מתג ידני (`data-theme`, client-side בלבד דרך `components.html`+`localStorage`, בלי `st.rerun()` כדי לא לאבד תוצאת-מסלול), ו-`config.toml [theme]/[theme.dark]` לרכיבי Streamlit ילידיים.
+- רקע "חי": 7 בלובים צפים (`shady-blob`) עם אנימציית ריחוף + סיבוב, טוקני-צבע ייעודיים (`--blob-shade/--blob-sun`) נפרדים מ-`--shade-soft`/`--sun-soft` כי אלה האחרונים נבלעו חזותית ב-light mode.
+- כרטיס "הידעת" (15 עובדות אמיתיות על חום/UV/סרטן-עור) — מוצג טרי בכל לחיצה על "מצא מסלול", כרכיב עצמאי **מחוץ** ל-`st.status` (לא בתוך הקופסה המתקפלת, כדי שלא ייעלם עם הסגירה האוטומטית).
+- **הוסר בכוונה:** אנימציית טעינה מותאמת (כפת-רגל 🦶) + padding מלאכותי (`time.sleep`) שנוספו ואז הוסרו לגמרי — המשתמשת העדיפה מהירות אמיתית על פני פוליש שכמעט אף אחד לא רואה.
+
+### 2. באגים שתוקנו
+- **כפתור איפוס שעה/תאריך (🔄) קרס:** ניסה לכתוב ל-`st.session_state["nav_date"]`/`["nav_time"]` **אחרי** שהווידג'טים כבר נוצרו באותה הרצה — Streamlit אוסר זאת. תוקן בתבנית "דגל-ממתין": הכפתור מסמן `_reset_datetime=True`+`st.rerun()`, והדגל נצרך **לפני** יצירת הווידג'טים בהרצה הבאה.
+- **שעות-לילה בסוכן איבדו את השעה שהמשתמש ביקש:** `_build_system`/`_coerce_hour` אפסו כל שעה מחוץ ל-6-19 ל-`None` — וכש-`app.py` לא קיבל שעה, הוא "איפס לשעה נוכחית" (השעה **האמיתית עכשיו**, לא מה שהמשתמשת הקלידה) — זה נצפה כ"18:30 מסתורי". תוקן: שעות ערב/לילה נשמרות כערך אמיתי (0-24), רק `mode='fast'`/`recommendation='night'` מסמנים לילה בנפרד. `routing.sun_position`/`plan_route` כבר תמכו בשעון מלא, אין מגבלה טכנית אמיתית ב-6-19.
+
+### 3. סקירת-ניקיון (audit) — 2 סוכני Explore
+נסקרו כל קבצי הפרויקט לאיתור תוכן מיושן/מת/סותר. ממצאים עיקריים (תוקנו באותו מושב): שני קבצי-זבל מקריים שנכנסו ל-git בטעות מפקודת shell שהשתבשה (`"and testing for M3"`, `tash`); `.streamlit/config.toml` היה untracked לגמרי (כל עבודת ה-theme לא קיימת בדפלוי); README.md מתאר `shade_level` בגרסה ישנה (4 רמות) וגם מקור-מבנים שגוי (GeoJSON פוליגונים במקום CSV צנטרואידים); CSS מת (`--font-body`), פונקציה מתה (`load_trees()`), שכפול קוד ×3 ("עיגול שעה נוכחית"); כמה docstrings לא מעודכנים ב-`src/*.py`.
+
+### 4. שיפור אלגוריתם הצל — לפני הניקיון, לבקשת המשתמשת
+המשתמשת ביקשה לוודא שהליבה "חכמה" לפני עוד מחיקות. נבדק: הפוליגונים האמיתיים של המבנים **כן** ניתנים לשחזור (ArcGIS REST חי של עיריית ת"א, layer 513) — אך הוחלט במפורש שלא לרדוף אחריהם כרגע (יותר מדי זמן). במקום זה, שני שיפורים **בלי נתונים חדשים**:
+- **footprint מבנים דינמי** (`precompute_shadow.py`): גודל מהצפיפות המקומית (ממוצע מרחק ל-5 שכנים, `clip[5,20]`מ'), כיוון מהרחוב הקרוב (`street_azimuth`) — במקום ריבוע קבוע 20×20מ' ישר-צירים. אומת אמפירית (6 bearings סינתטיים) שהסיבוב מיושר נכון לפני ריצה מלאה.
+- **צל-עצים אוחד ל-`shadow_cov`:** פוליגוני חופה אמיתיים נגררים לפי גובה-עץ משוער (buckets לפי `area_class`, 3-14מ' — הנחת-מודל מוצהרת), מסוננים אדפטיבית-לשעה, ומאוחדים לאותו STRtree עם צללי המבנים. `canopy_ratio` הוסר מנוסחת ה-TCI (נשאר decoy).
+- **תוצאה (אומתה, לא רק תיאורטית):** שדרות ירוקות מתועדות (רוטשילד/ח"ן/בן גוריון) — median `shadow_cov` בצהריים עלה מ-0.000 ל-0.20-0.30. אחרי אימון-מחדש: `canopy_ratio`/`building_height` importance → 0.000 (decoys אמיתיים), `shadow_cov` → 0.764 (מ-0.072), RMSE_test 0.136→0.090, R² 0.9959→0.9985.
+
+### קבצים שנגעו בהם
+- `app.py` (הירו/dark-mode/בלובים/הידעת/תיקוני כפתור-איפוס, תיקוני caption ל-shadow_cov המאוחד)
+- `.streamlit/config.toml` (theme, נשאר untracked בכוונה עד commit)
+- `src/agent.py` (`_coerce_hour` שעון מלא, `_build_system` night rule)
+- `precompute_shadow.py` (footprint דינמי + איחוד עצים — שינוי מהותי)
+- `src/spatial.py` (`_load_trees` מורחב ל-canopy_area_m2/area_class)
+- `src/data.py`, `src/model.py` (נוסחת TCI מעודכנת, אימון-מחדש)
+- `requirements.txt` (`shapely`, `scipy` נוספו כתלויות מפורשות)
+- `README.md`, `CLAUDE.md` (מספרים/נוסחה/decisions מעודכנים)

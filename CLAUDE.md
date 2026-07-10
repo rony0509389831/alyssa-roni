@@ -14,14 +14,16 @@ SHADY — מערכת ניווט עירוני להולכי רגל המוצאת מ
 | OSMnx | GraphML | רשת רחובות ת"א — cache ב-`data/tel_aviv_walk.graphml` |
 | Open-Meteo API | JSON (שעתי) | `temperature_2m`, `relative_humidity_2m`, `cloud_cover` |
 | Precomputed (spatial.py) | Parquet | פיצ'רים סטטיים לכל קשת — `data/edges_features.parquet` (`mean_building_height`, `tree_canopy_ratio`, `street_azimuth`) |
-| Precomputed (precompute_shadow.py) | Parquet | כיסוי-צל מבנים פר קשת × שעה (6:00–19:00, יום קיץ) — `data/shadow_coverage.parquet` |
+| Precomputed (precompute_shadow.py) | Parquet | כיסוי-צל **מאוחד** (מבנים+עצים) פר קשת × שעה (6:00–19:00, יום קיץ) — `data/shadow_coverage.parquet` |
 
 שימוש גם בספריות פייתון הבאות עבור ממשק משתמש, זווית שמש וכו':
 pandas, numpy, streamlit, requests, matplotlib,
 geopandas, osmnx, folium, streamlit-folium, pyarrow, pyogrio,
-pysolar, scikit-learn, networkx, pytest, groq
+pysolar, scikit-learn, networkx, pytest, groq, shapely, scipy
 
-**חוסרים ידועים:** ~4% מגבהי המבנים הם NaN — מטופל ע"י נוסחת imputation: `height = 2.95 * floors + 5.21` (R²≈0.49).
+**חוסרים ידועים:**
+- ~4% מגבהי המבנים הם NaN — מטופל ע"י נוסחת imputation: `height = 2.95 * floors + 5.21` (R²≈0.49).
+- `national_canopy_clean.parquet` אין בו שדה גובה-עץ — משתמשים בטבלת buckets לפי `area_class` (3.0-14.0מ', ר' `precompute_shadow.py::_TREE_HEIGHT_BY_CLASS`). **הנחת-מודל לא-נמדדת**, מאותה משפחה כמו imputation גובה המבנים — לא מוסתרת כעובדה.
 
 ---
 
@@ -29,23 +31,23 @@ pysolar, scikit-learn, networkx, pytest, groq
 
 - **משימה:** רגרסיה — חיזוי Thermal Comfort Index (ציון 1–10) לכל קשת בגרף הרחובות.
 - **פיצ'רים (7, מקור אמת = `FEATURE_COLS` ב-`src/data.py`):** `sun_altitude`, `building_height`, `canopy_ratio`, `cloud_cover`, `temperature`, `humidity`, `shadow_cov`.
-  - **`shadow_cov` ∈ [0,1] = כיסוי-צל מבנים, מחושב מראש** ב-`precompute_shadow.py` (פר קשת × שעה) ונטען מ-`data/shadow_coverage.parquet`. הוא **החליף את `shadow_angle` הישן** (ר' Key Decisions).
-  - בקובץ `edges_features.parquet` השמות הסטטיים הם `mean_building_height`/`tree_canopy_ratio`/`street_azimuth`. `building_height` כיום פיצ'ר עזר (חשיבות ~0.001 — תפקידו נבלע ע"י `shadow_cov`).
-  - `temperature`/`humidity` = decoys (לא בנוסחת ה-TCI) — המודל אמור להוריד להם משקל.
+  - **`shadow_cov` ∈ [0,1] = כיסוי-צל מאוחד (מבנים+עצים), מחושב מראש** ב-`precompute_shadow.py` (פר קשת × שעה) ונטען מ-`data/shadow_coverage.parquet`. הוא **החליף את `shadow_angle` הישן** (ר' Key Decisions), ומאז 2026-07-10 **מאחד גם צל-מבנים וגם צל-עצים** לאות אחד (ר' "שיפור אלגוריתם הצל" למטה).
+  - בקובץ `edges_features.parquet` השמות הסטטיים הם `mean_building_height`/`tree_canopy_ratio`/`street_azimuth`. **`building_height` ו-`canopy_ratio` הם כעת decoys** (חשיבות 0.000 בשניהם) — `shadow_cov` המאוחד בלע את שני התפקידים הפיזיים שלהם.
+  - `temperature`/`humidity`/`canopy_ratio` = decoys (לא בנוסחת ה-TCI) — המודל אמור להוריד להם משקל.
 - **חישוב Sun Position:** PySolar.
-- **נוסחת ה-TCI האנליטית (מקור התוויות):**
+- **נוסחת ה-TCI האנליטית (מקור התוויות, עודכנה 2026-07-10):**
   ```
-  TCI = clip( 1 + 9 * (sun_altitude/80) * (1 - cloud_cover/100) * (1 - 0.6*canopy_ratio - 0.4*shadow_cov), 1, 10 )
+  TCI = clip( 1 + 9 * (sun_altitude/80) * (1 - cloud_cover/100) * (1 - shadow_cov), 1, 10 )
   ```
-  `shadow_cov` = אחוז הקשת המכוסה בצל מבנים, ממצולעי footprint אמיתיים: כל מבנה = ריבוע ~20מ' בגובהו, צל נגרר `h/tan(alt)` בכיוון ההפוך לשמש, חיתוך עם הקשת. החליף את `building_height × cos(alt) × sin(shadow_angle)` הישן שתפס רק זווית (וזקף הצללת-שווא ברחובות מזרח-מערב).
-- **אות הצל אחיד בכל המערכת:** אותו `shadow_cov` מזין את טבלת האימון, המודל, גרף 4 (אנליטי + ML), והניווט.
+  `canopy_ratio` **הוסר מהנוסחה** (היה מודד את אותה הצללה בצורה סטטית/כפולה) — נשאר ב-`FEATURE_COLS` כ-decoy מכוון בלבד. `shadow_cov` = אחוז הקשת המכוסה בצל **מבנים ועצים כאחד**: כל מבנה = ריבוע שגודלו נגזר מהצפיפות המקומית וכיוונו מיושר לרחוב הקרוב (לא ריבוע קבוע 20מ' יותר), כל עץ = מצולע חופה אמיתי עם גובה משוער לפי `area_class`; שניהם נגררים `h/tan(alt)` בכיוון ההפוך לשמש ומאוחדים ל-STRtree אחד לפני חיתוך עם הקשת. החליף את `building_height × cos(alt) × sin(shadow_angle)` הישן שתפס רק זווית (וזקף הצללת-שווא ברחובות מזרח-מערב).
+- **אות הצל אחיד בכל המערכת:** אותו `shadow_cov` (המאוחד) מזין את טבלת האימון, המודל, גרף 4 (אנליטי + ML), והניווט.
 - **`src/data.py`** — `build_tci_df()`: דוגם קשת × שעת-ייחוס, מחשב יעד עם `shadow_cov`. `app.py` **מאציל** לכאן (אין יותר כפילות).
-- **`src/model.py`** — M3 שלבים 3–8. מנצח: **RandomForest (RMSE≈0.136, R²≈0.996 על test)** → `data/tci_model.joblib`. הרצה: `python -m src.model`.
+- **`src/model.py`** — M3 שלבים 3–8. מנצח: **RandomForest (RMSE≈0.090, R²≈0.9985 על test)** → `data/tci_model.joblib`. הרצה: `python -m src.model`. חשיבות פיצ'רים לאחר האיחוד: `shadow_cov`=0.764, `sun_altitude`=0.168, `cloud_cover`=0.035, `temperature`=0.031 (decoy), `humidity`=0.003 (decoy), `canopy_ratio`=0.000 (decoy), `building_height`=0.000.
 - **Loss:** MSE | **KPI:** RMSE (ראשי) + R² (בונוס).
 - **חלוקה:** 70/15/15 (n=5000 → 3500/750/750), `random_state=42`, פיצול לפי שורה. בחירת מנצח על **val**, דיווח על **test**.
-- **Baseline:** `DummyRegressor(mean)` (RMSE≈2.14 על test) + median (משני; TCI מוטה ימינה). Linear/Tree/Forest = מודלים מועמדים.
+- **Baseline:** `DummyRegressor(mean)` (RMSE≈2.35 על test) + median (משני; TCI מוטה ימינה). Linear/Tree/Forest = מודלים מועמדים.
 - **ניווט:** `src/routing.py` — מצב "מוצל" = A* על גרף OSMnx עם משקל `TCI^shade_factor × אורך` (TCI מהמודל, `shadow_cov` לפי השמש הנוכחית); מצב "מהיר" = OSRM.
-- **מגבלה מרכזית (לא לשכוח):** היעד סינתטי — המודל משחזר את הנוסחה (R² מנופח, מעגליות). `shadow_cov` קירב את הנוסחה למציאות אך לא שבר את המעגליות; תווית אמת (LST) היא הצעד הבא.
+- **מגבלה מרכזית (לא לשכוח):** היעד סינתטי — המודל משחזר את הנוסחה (R² מנופח, מעגליות; R² עוד עלה אחרי איחוד-הצל, כי הפישוט לגורם יחיד הקל עוד יותר על המודל "לשחזר נוסחה"). `shadow_cov` המאוחד קירב את הנוסחה למציאות אך לא שבר את המעגליות; תווית אמת (LST) היא הצעד הבא.
 - **ספריה:** Scikit-Learn
 
 ---
@@ -55,7 +57,8 @@ pysolar, scikit-learn, networkx, pytest, groq
 - **קובץ:** `src/agent.py` — `extract_route_params(text, **weather_ctx)`
 - **מודל:** Groq API — `llama-3.3-70b-versatile`
 - **תפקיד:** חילוץ פרמטרים בלבד מטקסט חופשי עברית/אנגלית — הLLM לא מחשב, רק מחלץ
-- **שדות פלט (7):** `origin`, `destination`, `hour` (6.0–19.0 decimal; null=אין העדפה), `date` (YYYY-MM-DD; null=היום), `mode` ("shaded"/"fast"), `shade_level` (null/"short"/"balanced"/"shaded"/"max"), `recommendation` (הסבר אוטומטי ≤100 תווים)
+- **שדות פלט (7):** `origin`, `destination`, `hour` (0.0–23.99 decimal; null=לא צוינה שעה כלל), `date` (YYYY-MM-DD; null=היום), `mode` ("shaded"/"fast"), `shade_level` (null/"short"/"balanced"/"max"), `recommendation` (הסבר אוטומטי ≤100 תווים)
+- **`hour` בשעות ערב/לילה (מחוץ ל-6-19, טווח הניווט המוצל):** נשמר כערך אמיתי (למשל 22.0 ל"10 בלילה") ולא מאופס ל-null — `mode='fast'`/`shade_level='short'`/`recommendation='night'` מסמנים את מצב-הלילה בנפרד. תיקון מ-2026-07-10: קודם השעה אופסה ל-null בכל שעת חושך, מה שגרם ל-`app.py` לאבד את השעה שהמשתמש ביקש ולהציג שעה נוכחית אקראית (הבאג שנצפה כ"18:30 מסתורי"). `routing.sun_position`/`plan_route` תומכים בשעון מלא ונופלים אוטומטית ל"מהיר" כששעת השמש שלילית — אין מגבלה טכנית על 6-19 מעבר לחישוב הצל.
 - **לוגיקת מזג-אוויר:** אם מועברים `sun_altitude`/`cloud_cover` — LLM ממליץ אוטומטית "fast"/"short" בלילה/עננות כבדה
 - **Hebrew normalization:** קידומות דקדוקיות (מ/ל/ב/ה) מנוקות משמות מקומות לפני geocoding
 - **Fallback:** כל כשלון (auth, network, JSON parse, שדות חסרים) → `{"error": "הודעה ידידותית בעברית"}`
@@ -84,24 +87,21 @@ Feature Vector (כולל shadow_cov) + Open-Meteo + PySolar → TCI (analytic / 
         ↓
 Edge Weights → ניווט: A*+TCI ("מוצל") / OSRM ("מהיר")
         ↓
-Route → Folium Map (TCI color gradient) → Streamlit UI (7 tabs)
+Route → Folium Map (TCI color gradient) → Streamlit UI (עמוד ניווט יחיד + נספח מקופל)
 ```
 
 **Fallback:** אם Open-Meteo לא זמין — טעינת נתוני אקלים ממוצעים מ-`data/climate_fallback.json`.
 
 ---
 
-## App Structure (7 Tabs)
+## App Structure (עמוד יחיד + נספח מקופל — מ-2026-07-08)
 
-| Tab | תפקיד |
+**החלטת UX:** המרצה קבע שדרישות התיעוד של הקורס (M2) צריכות להיות שוליות ולא חלק מהחוויה המרכזית; המשתמשת ביקשה עיצוב ממוקד-משתמש לקראת הצגה תחרותית. לכן `app.py` הוא כעת **עמוד יחיד** — חוויית הניווט רצה מלמעלה עד סוף בלי שורת טאבים, וכל תוכן דרישות הקורס עבר ל-`st.expander` מקופל אחד בתחתית העמוד (לא נמחק — עדיין מלא ונגיש להערכה). טאב "🗺️ הדגמת נתונים" (מבנים+עצים+שכונת הצפון הישן, נפרד ממפת תוצאת המסלול) **נמחק לחלוטין** — היה לביקורת עצמית, לא רלוונטי יותר.
+
+| אזור | תפקיד |
 |-----|--------|
-| 🚶 ניווט (**ראשון**) | קלט LLM agent (טקסט חופשי) + Geocoding 3-שלבי (Nominatim→Overpass→Photon) + A*+TCI ("מוצל") / OSRM ("מהיר") + מפת מסלול עם gradient צבע |
-| ℹ️ אודות | מידע כללי + תוצאות השוואת מודלים |
-| 🎯 למידת הבעיה (M2 Component 1) | פרסונה (נועה, 28), מסע משתמש לפני/אחרי |
-| 📚 סקירת ספרות (M2 Component 2) | 4 מאמרים מרכזיים (Boeing 2017, Park 2021, Lin 2012, Sulzer 2025) |
-| 🏪 סקר שוק (M2 Component 3) | 5 מתחרים: Google Maps, Citymapper, Strava, Shadowmap, CoolWalks |
-| 📊 ניתוח נתונים (M2 Component 4) | EDA מבנים, עצים, מזג אוויר, זוויות שמש |
-| 🗺️ מפה | Folium אינטראקטיבי — מבנים + עצים + שכונת הצפון הישן |
+| 🚶 ניווט (**עמוד ראשי, לא טאב**) | קלט LLM agent (טקסט חופשי) + Geocoding 3-שלבי (Nominatim→Overpass→Photon) + A*+TCI ("מוצל") / OSRM ("מהיר") + מפת מסלול עם gradient צבע + `st.status()` עם הודעות התקדמות אמיתיות בזמן חישוב |
+| 📎 חומרי רקע ותיעוד (**expander מקופל, בתחתית**) | מכיל 5 תת-expanders: ℹ️ אודות, 🎯 למידת הבעיה (M2 Component 1), 📚 סקירת ספרות (M2 Component 2), 🏪 סקר שוק (M2 Component 3), 📊 ניתוח נתונים (M2 Component 4) — תוכן מקורי בלי שינוי, רק הוזז |
 
 ---
 
@@ -109,10 +109,12 @@ Route → Folium Map (TCI color gradient) → Streamlit UI (7 tabs)
 
 ```
 alyssa-roni/
-├── app.py                      # Streamlit entry point (7 tabs)
+├── app.py                      # Streamlit entry point (עמוד יחיד: ניווט + expander מקופל לחומרי הקורס)
+├── .streamlit/config.toml      # ערכת עיצוב (כחול-ירוק=צל, כתום-צהוב=שמש, מיושר מול _tci_color())
 ├── precompute_features.py      # הרצה חד-פעמית: יוצר edges_features.parquet
-├── precompute_shadow.py        # הרצה חד-פעמית: יוצר shadow_coverage.parquet (כיסוי-צל פר קשת×שעה)
-│   # הערה: tel_aviv_buildings.geojson, download_buildings.py, check_data.py — אינם בפרויקט
+├── precompute_shadow.py        # הרצה חד-פעמית: יוצר shadow_coverage.parquet (כיסוי-צל מאוחד פר קשת×שעה)
+│   # הערה: tel_aviv_buildings.geojson, download_buildings.py, check_data.py,
+│   # src/clean_buildings.py, src/eda_buildings.py, outputs_M2/ — כולם ב-.gitignore, אינם בעץ העבודה בפועל
 ├── data/
 │   ├── buildings_clean.csv         # 45,783 צנטרואידי מבנים (lat/lon+גובה) — מקור הצל
 │   ├── national_canopy_clean.parquet # ~231k פוליגוני עצים
@@ -125,17 +127,16 @@ alyssa-roni/
 │   └── screenshots/                # PNG לממשק
 ├── src/
 │   ├── agent.py            # M4: extract_route_params() — Groq LLM, coercion, validation, Hebrew normalization
-│   ├── data.py             # build_tci_df() — טבלת אימון TCI (יעד+פיצ'ר shadow_cov), ללא Streamlit
-│   ├── clean_buildings.py  # ניקוי שכבת המבנים
-│   ├── eda_buildings.py    # EDA וגרפים לשכבת המבנים
-│   ├── spatial.py          # compute_edge_features() — מבנים buffer 25מ' (צנטרואידים), עצים buffer 10מ' (חיתוך פוליגונים)
+│   ├── data.py             # build_tci_df() — טבלת אימון TCI (יעד+פיצ'ר shadow_cov מאוחד), ללא Streamlit
+│   ├── spatial.py          # compute_edge_features() — מבנים buffer 25מ' (צנטרואידים), עצים buffer 10מ' (חיתוך פוליגונים); _load_trees() גם לשימוש precompute_shadow.py
 │   ├── model.py            # M3 שלבים 3-8: train/val/test, baseline, 3 מודלים, בחירת מנצח, שמירה
 │   ├── routing.py          # plan_route (DI orchestrator), geocode_address (3-stage), compute_tci_weights, compute_shaded_route (A*+TCI), build_route_map
 │   └── weather.py          # get_current_weather() — Open-Meteo + fallback
 ├── notebooks/01_eda.ipynb  # EDA
-├── outputs_M2/ · outputs_M3/
+├── outputs_M3/             # דוח model_checks.html (מקור; docs/ הוא ההעתק המפורסם ל-GitHub Pages)
 ├── tests/
-│   └── test_agent.py       # בדיקות validation, coercion ו-fallback ל-agent.py (ללא קריאות רשת)
+│   ├── test_agent.py       # בדיקות validation, coercion ו-fallback ל-agent.py (ללא קריאות רשת)
+│   └── test_smoke.py       # import src בלבד — טסט עשן טריוויאלי
 ├── requirements.txt
 ├── WORKLOG.md              # יומן עבודה לפי מושבים
 └── CLAUDE.md
@@ -156,21 +157,26 @@ alyssa-roni/
 
 ## Key Decisions (לא להסביר מחדש)
 
-- **הצללת מבנים = `shadow_cov`** (לא `shadow_angle` יותר). כל מבנה=ריבוע 20מ' בגובהו → מצולע צל אמיתי (נגרר `h/tan(alt)` נגד השמש) → אחוז הקשת בצל. מחושב מראש ב-`precompute_shadow.py`. מתקן הצללת-שווא ברחובות מזרח-מערב (שינקין) שהנוסחה הישנה (`sin(shadow_angle)`) יצרה. **אומת ידנית מול Shadowmap** (כלי אימות, לא מקור נתונים).
+- **הצללת מבנים = `shadow_cov`** (לא `shadow_angle` יותר). מצולע צל אמיתי (נגרר `h/tan(alt)` נגד השמש) → אחוז הקשת בצל. מחושב מראש ב-`precompute_shadow.py`. מתקן הצללת-שווא ברחובות מזרח-מערב (שינקין) שהנוסחה הישנה (`sin(shadow_angle)`) יצרה. **אומת ידנית מול Shadowmap** (כלי אימות, לא מקור נתונים).
 - **`shadow_cov` הוא אות הצל היחיד** — אותו חישוב באימון, במודל, בגרף 4, ובניווט (אחידות מלאה לאחר הגירה).
-- **ייחוס יום-קיץ (27 נקודות זמן, כל חצי שעה 6:00–19:00):** קיץ = השמש הכי גבוהה → צללים קצרים → הכי פחות צל → המבחן המחמיר ביותר לראוטר. **פערים ידועים:** (א) עונתיות השמש (הניווט נצמד למצב-השמש הקרוב) — *הבניינים הם שכבה קבועה, הפער בשמש לא בבניינים*; (ב) ריבוע 20מ' מצנטרואיד ולא קו-מתאר אמיתי.
+- **שיפור אלגוריתם הצל (2026-07-10, בלי הורדת נתונים חדשים):**
+  - **footprint מבנים דינמי** (החליף ריבוע קבוע 20×20מ'): **גודל** נגזר מצפיפות מקומית (ממוצע מרחק ל-5 שכנים קרובים, `clip[5,20]`מ'); **כיוון** מיושר לרחוב הקרוב ביותר (`street_azimuth`) במקום ריבוע ישר-צירים.
+  - **צל-עצים אוחד ל-`shadow_cov`**: פוליגוני חופה אמיתיים (לא ריבוע!) נגררים לפי גובה-עץ משוער (buckets לפי `area_class`, 3-14מ' — הנחת-מודל, אין שדה גובה אמיתי בנתונים), מסוננים אדפטיבית-לשעה (רק עצים שיכולים להגיע לרחוב בזווית-השמש הנתונה — חוסך זמן ריצה בלי לפגוע בדיוק), ומאוחדים ל-STRtree אחד ביחד עם צללי המבנים לפני חיתוך עם הקשת (`unary_union` פותר double-counting חפיפות אוטומטית). **מחליף** את `canopy_ratio` הסטטי (שלא היה תלוי-שעה בכלל) כאות הצל-מעצים.
+  - תוצאה: `canopy_ratio`/`building_height` ירדו לחשיבות **0.000** (decoys אמיתיים כעת), `shadow_cov` עלה ל-**0.764** (מ-0.072).
+  - אומת: שדרות עם canopy מתועד (רוטשילד/ח"ן/בן גוריון) עברו מ-median shadow_cov=0.000 בצהריים ל-0.20-0.30 — הצללת-הצהריים מהעצים סוף-סוף נתפסת נכון.
+- **ייחוס יום-קיץ (27 נקודות זמן, כל חצי שעה 6:00–19:00):** קיץ = השמש הכי גבוהה → צללים קצרים → הכי פחות צל → המבחן המחמיר ביותר לראוטר. **פערים ידועים:** (א) עונתיות השמש (הניווט נצמד למצב-השמש הקרוב) — *הבניינים/עצים הם שכבה קבועה, הפער בשמש לא בהם*; (ב) footprint מבנים משוער (צפיפות+כיוון, לא קו-מתאר אמיתי) וגובה-עץ משוער (buckets לפי `area_class`, לא מדוד).
 - **`build_tci_df` אוחדה:** `app.py` מאציל ל-`src/data.py` — אין יותר כפילות (החוב הטכני נסגר).
 - Spatial Join: **מבנים buffer 25מ' מצנטרואידי `buildings_clean.csv`** (הפוליגונים המקוריים חסרים); **עצים buffer 10מ' בחיתוך פוליגונים אמיתי** מ-`national_canopy_clean.parquet`.
 - גבהי מבנים חסרים מחושבים ע"י נוסחה (לא ML): `height = 2.95 * floors + 5.21`.
 - פיצ'רים סטטיים מראש ב-`edges_features.parquet`; כיסוי-צל מראש ב-`shadow_coverage.parquet`; גרף רחובות ב-cache `tel_aviv_walk.graphml`.
 - **ניווט מיושם:** מצב "מוצל" = **A\*** (Haversine heuristic ×0.5, admissible) עם משקל `TCI^shade_factor × אורך × העדפת-ירוק`; מצב "מהיר" = OSRM. בטאב הניווט יש **בורר שעה** (6:00–19:00): השמש אמיתית לתאריך של היום בשעה הנבחרת, מזג האוויר חי, ורק `shadow_cov` מיוחס ליום קיץ (snap למצב-השמש הקרוב). בשעות שקיעה/זריחה/זנית אין ניגודיות צל → המסלול המוצל מתכנס למהיר (תקין).
 - **Geocoding מדורג ב-3 שלבים** (`geocode_address()` ב-`routing.py`): (1) Nominatim — 3 וריאנטי שאילתה; (2) Overpass API — שמות POI ללא כתובת; (3) Photon — fuzzy geocoder שסובל שגיאות כתיב וחיפוש שם חנות.
-- **`shade_level` + `shade_factor` exponent:** AGENT מחלץ `shade_level` (null/"short"/"balanced"/"shaded"/"max") → ממופה ל-`shade_factor` מספרי → `TCI^shade_factor` מגביר את ניגודיות המשקלות (shade_factor=1.5: TCI 2→2.8, TCI 8→22.6).
+- **`shade_level` + `shade_factor` exponent:** AGENT מחלץ `shade_level` (null/"short"/"balanced"/"max") → ממופה ל-`shade_factor` מספרי (1.0/2.0/3.0 בהתאמה — 3 רמות, לא 4, מ-2026-07-09) → `TCI^shade_factor` מגביר את ניגודיות המשקלות (shade_factor=2.0: TCI 2→4, TCI 8→64).
 - **Pedestrian bonus:** קשתות מסוג footway/pedestrian מקבלות מקדם 0.8× במשקל — עידוד מדרכות וכבישים לא-ראשיים.
 - **Fallback modes ב-`plan_route()`:** `model_missing` (אין tci_model.joblib), `night` (sun_altitude≤0°), `overcast` (cloud_cover≥80%), `weights_missing` — בכולם חוזרים ל-OSRM אוטומטית עם הודעה.
-- **`plan_route()` — dependency injection:** מקבל `geocode_fn`, `weather_fn`, `weights_fn` — ניתן לבדיקה ללא Streamlit (testable, stateless).
-- **העדפת רחובות ירוקים בניווט** (`_preferred_edges` ב-`routing.py`): קשת ברחוב "ירוק" מקבלת מקדם `BOULEVARD_WEIGHT_FACTOR=0.5` במשקל. רחוב ירוק = ממוצע כיסוי-עצים > 35% (`CANOPY_STREET_THRESHOLD`), **או** שדרה עם כיסוי ≥ 24% (`BOULEVARD_CANOPY_FLOOR`, רף רוטשילד — תופס בולווארדים שעצי הטיילת שלהם תת-נספרים בקשתות הכביש: רוטשילד, ח"ן, בן גוריון). כיכר/שביל/סמטה מסוננים. ההחלטה **ברמת הרחוב (ממוצע), לא פר-קשת** — כדי שקשת בודדת עם canopy נמוך לא "תשבור" רחוב ירוק שלם (הראוטר מעדיף את הרחוב כיחידה). **ה-TCI לא מושפע** — זו העדפת ניווט בלבד, מעבר לנוחות הגולמית.
+- **`plan_route()` — dependency injection:** מקבל `geocode_fn`, `weather_fn`, `weights_fn` — ניתן לבדיקה ללא Streamlit (testable, stateless). פרמטר נוסף אופציונלי `on_progress(msg: str)` (ברירת מחדל `None`, לא שובר תאימות) נקרא בכל שלב אמיתי (כולל שלבי fallback הפנימיים של `geocode_address()`: Nominatim→Overpass→Photon) — `app.py` מחבר אותו ל-`st.status()` כדי להציג הודעות התקדמות אמיתיות במקום ספינר סתום.
+- **העדפת רחובות ירוקים בניווט** (`_preferred_edges` ב-`routing.py`): קשת ברחוב "ירוק" מקבלת מקדם `BOULEVARD_WEIGHT_FACTOR=0.5` במשקל. רחוב ירוק = ממוצע כיסוי-עצים > 35% (`CANOPY_STREET_THRESHOLD`), **או** שדרה עם כיסוי ≥ 24% (`BOULEVARD_CANOPY_FLOOR`, רף רוטשילד — תופס בולווארדים שעצי הטיילת שלהם תת-נספרים בקשתות הכביש: רוטשילד, ח"ן, בן גוריון). כיכר/שביל/סמטה מסוננים. ההחלטה **ברמת הרחוב (ממוצע), לא פר-קשת** — כדי שקשת בודדת עם canopy נמוך לא "תשבור" רחוב ירוק שלם (הראוטר מעדיף את הרחוב כיחידה). **ה-TCI לא מושפע** — זו העדפת ניווט בלבד, מעבר לנוחות הגולמית. **הערה (2026-07-10):** אחרי איחוד צל-עצים ל-`shadow_cov`, שדרות אלה כבר מקבלות `shadow_cov` גבוה אמיתי-ותלוי-שעה (לא רק canopy_ratio סטטי) — ה-workaround הידני הזה עשוי להיות ניתן לפישוט/הסרה בעתיד, אך לא נבדק/שונה כחלק מהשינוי הנוכחי.
 - חישובי צל = גיאומטריה 2D (לא 3D ray-casting מלא כמו Shadowmap).
-- baseline = `DummyRegressor(mean)` (RMSE≈2.14) — הממוצע ממזער RMSE בהגדרה; median משני בגלל הטיה ימנית.
-- **מגבלה מרכזית — יעד סינתטי:** ה-TCI הוא נוסחה שכתבנו, אז המודל "משחזר נוסחה" (R²≈0.996 מנופח). `shadow_cov` קירב למציאות אך לא שבר את המעגליות. השלב שישבור אותה = תוויות אמת מדודות (LST מלוויין דרך Earth Engine).
-- `temperature`/`humidity` = decoys (לא בנוסחה) — נשמרו לבדיקת בחירת פיצ'רים.
+- baseline = `DummyRegressor(mean)` (RMSE≈2.35) — הממוצע ממזער RMSE בהגדרה; median משני בגלל הטיה ימנית.
+- **מגבלה מרכזית — יעד סינתטי:** ה-TCI הוא נוסחה שכתבנו, אז המודל "משחזר נוסחה" (R²≈0.9985 מנופח — עלה עוד יותר אחרי איחוד-הצל, כי הנוסחה המפושטת ל-`1-shadow_cov` קלה עוד יותר לשחזור). `shadow_cov` המאוחד קירב למציאות אך לא שבר את המעגליות. השלב שישבור אותה = תוויות אמת מדודות (LST מלוויין דרך Earth Engine).
+- `temperature`/`humidity`/`canopy_ratio` = decoys (לא בנוסחה) — נשמרו לבדיקת בחירת פיצ'רים (`canopy_ratio` הצטרף ב-2026-07-10 כשהוסר מהנוסחה לטובת `shadow_cov` המאוחד).
