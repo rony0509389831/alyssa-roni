@@ -33,6 +33,8 @@ osmnx>=1.9            # גרף רחובות OSM + geocoding
 networkx>=3.3         # Dijkstra + graph operations
 pysolar>=0.11         # נדרש לחישוב מיקום השמש במפה
 tzdata>=2024.1        # נדרש ל-ZoneInfo("Asia/Jerusalem") ב-Linux/Streamlit Cloud
+shapely>=2.0          # מצולעי-צל, STRtree — precompute_shadow.py (בעבר תלות-עקיפה בלבד של geopandas)
+scipy>=1.11           # cKDTree — footprint לפי צפיפות מקומית ב-precompute_shadow.py
 
 # ==========================================
 # סוכן LLM (M4)
@@ -42,4 +44,4 @@ groq>=0.11            # לקוח Groq (תואם-OpenAI) לחילוץ פרמטר�
 # ==========================================
 # בדיקות קוד (Testing)
 # ==========================================
-# pytest>=8.2
+pytest>=8.2

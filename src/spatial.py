@@ -2,7 +2,7 @@
 חישוב פיצ'רים מרחביים לכל קשת ברשת OSMnx — Spatial Join עם מבנים ועצים.
 
 פלט: data/edges_features.parquet
-עמודות: u, v, key, length, mean_building_height, tree_canopy_ratio
+עמודות: u, v, key, length, mean_building_height, tree_canopy_ratio, street_azimuth
 """
 from pathlib import Path
 
@@ -18,7 +18,7 @@ TREES_PATH = Path("data/national_canopy_clean.parquet")
 
 # CRS מטרי לחישובי buffer
 _CRS_METRIC = "EPSG:2039"
-# buffer נפרד: מבנים 25מ' (צנטרואידים — מרכז המבנה רחוק מהציר); עצים 15מ' עם חיתוך
+# buffer נפרד: מבנים 25מ' (צנטרואידים — מרכז המבנה רחוק מהציר); עצים 10מ' עם חיתוך
 # פוליגונים אמיתי (5מ' פספס עצים שחופתם פרושה מעל הרחוב בעוד מרכזם מחוץ ל-buffer;
 # היחס יציב כי שטח החיתוך גדל יחד עם שטח ה-buffer).
 _BUILDING_BUFFER_M = 25
@@ -47,8 +47,11 @@ def _load_trees(trees_path: Path = TREES_PATH) -> gpd.GeoDataFrame:
     בעבר השתמשנו בצנטרואידים (lat/lon) — אבל זה פספס עצים שחופתם פרושה מעל הרחוב
     בעוד מרכזם מחוץ ל-buffer (למשל עצי שדרות רוטשילד). עכשיו משתמשים בפוליגון עצמו
     ובחיתוך אמיתי מולו (ראה compute_edge_features).
+
+    כולל גם canopy_area_m2/area_class (לא רק geometry) — נדרשים ב-precompute_shadow.py
+    לגזירת גובה-עץ משוער לצל דינמי (שלב 2, אין שדה גובה אמיתי בנתונים).
     """
-    gdf = gpd.read_parquet(trees_path)[["geometry"]].to_crs(_CRS_METRIC)
+    gdf = gpd.read_parquet(trees_path)[["geometry", "canopy_area_m2", "area_class"]].to_crs(_CRS_METRIC)
     gdf = gdf[gdf.is_valid & ~gdf.geometry.is_empty].reset_index(drop=True)
     return gdf
 
@@ -79,7 +82,7 @@ def compute_edge_features(
 
     תהליך:
       1. קשתות → GeoDataFrame (LineString) → EPSG:2039
-      2. buffer נפרד: מבנים 25מ' (צנטרואידים), עצים 15מ' (חיתוך פוליגונים)
+      2. buffer נפרד: מבנים 25מ' (צנטרואידים), עצים 10מ' (חיתוך פוליגונים)
       3. sjoin עם צנטרואידי מבנים → ממוצע גובה לכל קשת
       4. חיתוך פוליגוני חופה עם buffer העצים → שטח חיתוך → ratio מתוך שטח buffer
       5. bearing (כיוון רחוב 0°–180°) מגיאומטריה
@@ -122,7 +125,7 @@ def compute_edge_features(
         .rename("mean_building_height")
     )
 
-    # ── Spatial Join: עצים (חיתוך פוליגונים אמיתי, buffer 15מ') ───────────────
+    # ── Spatial Join: עצים (חיתוך פוליגונים אמיתי, buffer 10מ') ───────────────
     print(f"Loading tree canopy polygons from {trees_path} ...")
     trees = _load_trees(trees_path)
     print(f"  {len(trees):,} tree canopy polygons")

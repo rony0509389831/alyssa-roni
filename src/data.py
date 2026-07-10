@@ -29,7 +29,8 @@ EDGES_PATH = Path("data/edges_features.parquet")
 SHADOW_PATH = Path("data/shadow_coverage.parquet")
 CLIMATE_PATH = Path("data/climate_fallback.json")
 
-# שעות הייחוס + התאריך — חייבים להיות זהים ל-precompute_shadow.py
+# שעות הייחוס + התאריך — מקור אמת יחיד; precompute_shadow.py מייבא משתי הקבועים
+# האלה (לא משכפל), כדי שלא יסתנכרנו.
 REF_DATE = (2026, 6, 27)
 HOURS = [round(6.0 + 0.5 * i, 1) for i in range(27)]   # 6.0 .. 19.0
 
@@ -105,10 +106,15 @@ def build_tci_df(n: int = 5000, seed: int = 42) -> pd.DataFrame:
         cloud = rng.uniform(0, 50, n)
         humid = rng.uniform(65, 80, n)
 
-    # חישוב TCI מהנוסחה האנליטית (זהה ל-app.py, גרף 4): הצל = shadow_cov ישירות
-    w1, w2 = 0.6, 0.4
+    # חישוב TCI מהנוסחה האנליטית (זהה ל-app.py, גרף 4): הצל = shadow_cov ישירות.
+    # שלב 2 (2026-07-10): shadow_cov כעת מאוחד (מבנים+עצים, ר' precompute_shadow.py) —
+    # ההצללה הישירה של עצים כבר מקופלת בתוכו, אז canopy_ratio הוסר מהנוסחה (היה
+    # מודד את אותה תופעה פיזית עצמה בצורה סטטית/לא-מדויקת). canopy_ratio נשאר
+    # ב-FEATURE_COLS כ-decoy מכוון שלישי (לצד temperature/humidity) — לא הוסר מהקלט,
+    # רק מהנוסחה. לא "אופציה ב'" (לפרש-מחדש כקירור-אמביינטי): זה מוסיף הצדקה-פיזית
+    # שנייה לא-מכוילה, ההפך מהיעד של תוויות-אמת מדודות (ר' "מגבלה מרכזית" ב-CLAUDE.md).
     tci = np.clip(
-        1 + 9 * (sa / 80) * (1 - cloud / 100) * (1 - w1 * cr - w2 * cov_s),
+        1 + 9 * (sa / 80) * (1 - cloud / 100) * (1 - cov_s),
         1, 10,
     )
 

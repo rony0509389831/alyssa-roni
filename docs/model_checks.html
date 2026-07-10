@@ -109,7 +109,7 @@ body {
 .track-forest {
   position: absolute;
   left: 0; top: 0; bottom: 0;
-  width: 6.3%;
+  width: 3.8%; /* 0.090 / 2.353 */
   background: var(--shade);
   border-radius: 2px;
   animation: growBar 1.2s ease-out both;
@@ -471,17 +471,17 @@ tr.tr-base   td { color: var(--muted); }
   <div class="metrics-row">
     <div class="metric">
       <span class="metric-label">RMSE · test</span>
-      <div class="metric-value c-shade">0.113</div>
-      <div class="metric-delta c-shade">↓ 93.7% מה-baseline</div>
+      <div class="metric-value c-shade">0.090</div>
+      <div class="metric-delta c-shade">↓ 96.2% מה-baseline</div>
     </div>
     <div class="metric">
       <span class="metric-label">R² · test</span>
-      <div class="metric-value c-shade">0.996</div>
+      <div class="metric-value c-shade">0.9985</div>
       <div class="metric-delta c-muted">1 = מושלם</div>
     </div>
     <div class="metric">
       <span class="metric-label">Baseline RMSE</span>
-      <div class="metric-value c-accent">1.790</div>
+      <div class="metric-value c-accent">2.353</div>
       <div class="metric-delta c-accent">DummyRegressor (mean)</div>
     </div>
     <div class="metric">
@@ -496,11 +496,11 @@ tr.tr-base   td { color: var(--muted); }
     <div class="track-bar">
       <div class="track-forest"></div>
     </div>
-    <span class="track-label-right">→ 1.790 (baseline)</span>
+    <span class="track-label-right">→ 2.353 (baseline)</span>
   </div>
   <div class="track-legend">
-    <span class="legend-item"><span class="legend-dot" style="background:var(--shade)"></span>forest RMSE = 0.113 (6.3% מהטווח)</span>
-    <span class="legend-item"><span class="legend-dot" style="background:#D4C9B8"></span>baseline RMSE = 1.790</span>
+    <span class="legend-item"><span class="legend-dot" style="background:var(--shade)"></span>forest RMSE = 0.090 (3.8% מהטווח)</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#D4C9B8"></span>baseline RMSE = 2.353</span>
   </div>
 </div>
 
@@ -515,7 +515,7 @@ tr.tr-base   td { color: var(--muted); }
     </div>
     <div class="check-body">
       <h2 class="check-title">ביצועי המודל ביחס ל-Baseline</h2>
-      <span class="check-badge badge-pass">PASS · שיפור ×15.8 ב-RMSE לעומת ה-Baseline</span>
+      <span class="check-badge badge-pass">PASS · שיפור ×26.3 ב-RMSE לעומת ה-Baseline</span>
       <p class="chart-note">שיפור יחסי ב-RMSE לעומת ה-DummyRegressor (mean) — ה-Baseline מייצג את רצפת הביצועים (0%); יתר המודלים נמדדים כאחוז מהשיפור המרבי האפשרי</p>
       <div class="bar-chart">
         <div class="bar-row">
@@ -525,18 +525,18 @@ tr.tr-base   td { color: var(--muted); }
         </div>
         <div class="bar-row">
           <div class="bar-name">linear</div>
-          <div class="bar-track"><div class="bar-fill b-linear" style="width:77.9%"></div></div>
-          <div class="bar-pct" style="color:#6AABB8">77.9%</div>
+          <div class="bar-track"><div class="bar-fill b-linear" style="width:62.1%"></div></div>
+          <div class="bar-pct" style="color:#6AABB8">62.1%</div>
         </div>
         <div class="bar-row">
           <div class="bar-name">tree</div>
-          <div class="bar-track"><div class="bar-fill b-tree" style="width:89.2%"></div></div>
-          <div class="bar-pct" style="color:#3A8E9E">89.2%</div>
+          <div class="bar-track"><div class="bar-fill b-tree" style="width:93.2%"></div></div>
+          <div class="bar-pct" style="color:#3A8E9E">93.2%</div>
         </div>
         <div class="bar-row">
           <div class="bar-name">forest (winner)</div>
-          <div class="bar-track"><div class="bar-fill b-forest" style="width:93.7%"></div></div>
-          <div class="bar-pct c-shade">93.7%</div>
+          <div class="bar-track"><div class="bar-fill b-forest" style="width:96.2%"></div></div>
+          <div class="bar-pct c-shade">96.2%</div>
         </div>
       </div>
     </div>
@@ -574,30 +574,30 @@ tr.tr-base   td { color: var(--muted); }
           <tr class="tr-base">
             <td>baseline (mean)</td>
             <td class="td-val">—</td>
-            <td class="td-test">1.790</td>
-            <td>−0.002</td>
+            <td class="td-test">2.353</td>
+            <td>−0.001</td>
           </tr>
           <tr>
             <td>linear</td>
-            <td class="td-val">0.395</td>
-            <td class="td-test">0.396</td>
-            <td>0.951</td>
+            <td class="td-val">0.889</td>
+            <td class="td-test">0.892</td>
+            <td>0.856</td>
           </tr>
           <tr>
             <td>tree</td>
-            <td class="td-val">0.210</td>
-            <td class="td-test">0.193</td>
-            <td>0.988</td>
+            <td class="td-val">0.150</td>
+            <td class="td-test">0.160</td>
+            <td>0.995</td>
           </tr>
           <tr class="tr-winner">
             <td>forest (winner)</td>
-            <td class="td-val">0.135</td>
-            <td class="td-test">0.113</td>
-            <td>0.996</td>
+            <td class="td-val">0.082</td>
+            <td class="td-test">0.090</td>
+            <td>0.9985</td>
           </tr>
         </tbody>
       </table>
-      <p class="table-note">המודל הנבחר (forest) נקבע אך ורק לפי RMSE_val=0.135; קבוצת ה-test לא שימשה בשלב הבחירה ומתפקדת כהערכה עיוורת.</p>
+      <p class="table-note">המודל הנבחר (forest) נקבע אך ורק לפי RMSE_val=0.082; קבוצת ה-test לא שימשה בשלב הבחירה ומתפקדת כהערכה עיוורת.</p>
     </div>
   </div>
 
@@ -652,43 +652,43 @@ tr.tr-base   td { color: var(--muted); }
           <div class="mcard-desc">0 = ניחוש עיוור · 1 = מושלם</div>
         </div>
       </div>
-      <p class="fi-note">Feature Importances — המודל מייחס משקל זניח ל-temperature ו-humidity, שאינם פיצ'רים אפקטיביים בנוסחת ה-TCI האנליטית (‡):</p>
+      <p class="fi-note">Feature Importances (אחרי איחוד צל-מבנים+עצים ל-shadow_cov, 2026-07-10) — המודל מייחס משקל זניח ל-temperature, humidity, canopy_ratio ו-building_height, שאינם פיצ'רים אפקטיביים בנוסחת ה-TCI האנליטית (‡):</p>
+      <div class="fi-row">
+        <div class="fi-name">shadow_cov</div>
+        <div class="fi-track"><div class="fi-fill" style="width:76.4%"></div></div>
+        <div class="fi-val">0.764</div>
+      </div>
       <div class="fi-row">
         <div class="fi-name">sun_altitude</div>
-        <div class="fi-track"><div class="fi-fill" style="width:75.4%"></div></div>
-        <div class="fi-val">0.754</div>
+        <div class="fi-track"><div class="fi-fill" style="width:16.8%"></div></div>
+        <div class="fi-val">0.168</div>
       </div>
       <div class="fi-row">
         <div class="fi-name">cloud_cover</div>
-        <div class="fi-track"><div class="fi-fill" style="width:11.7%"></div></div>
-        <div class="fi-val">0.117</div>
+        <div class="fi-track"><div class="fi-fill" style="width:3.5%"></div></div>
+        <div class="fi-val">0.035</div>
       </div>
       <div class="fi-row">
         <div class="fi-name decoy">temperature ‡</div>
-        <div class="fi-track"><div class="fi-fill decoy" style="width:6.7%"></div></div>
-        <div class="fi-val">0.067</div>
-      </div>
-      <div class="fi-row">
-        <div class="fi-name">canopy_ratio</div>
-        <div class="fi-track"><div class="fi-fill" style="width:4.7%"></div></div>
-        <div class="fi-val">0.047</div>
+        <div class="fi-track"><div class="fi-fill decoy" style="width:3.1%"></div></div>
+        <div class="fi-val">0.031</div>
       </div>
       <div class="fi-row">
         <div class="fi-name decoy">humidity ‡</div>
-        <div class="fi-track"><div class="fi-fill decoy" style="width:0.8%"></div></div>
-        <div class="fi-val">0.008</div>
+        <div class="fi-track"><div class="fi-fill decoy" style="width:0.3%"></div></div>
+        <div class="fi-val">0.003</div>
       </div>
       <div class="fi-row">
-        <div class="fi-name">building_height</div>
-        <div class="fi-track"><div class="fi-fill" style="width:0.5%"></div></div>
-        <div class="fi-val">0.005</div>
+        <div class="fi-name decoy">canopy_ratio ‡</div>
+        <div class="fi-track"><div class="fi-fill decoy" style="width:0.0%"></div></div>
+        <div class="fi-val">0.000</div>
       </div>
       <div class="fi-row">
-        <div class="fi-name">shadow_angle</div>
-        <div class="fi-track"><div class="fi-fill" style="width:0.2%"></div></div>
-        <div class="fi-val">0.002</div>
+        <div class="fi-name decoy">building_height ‡</div>
+        <div class="fi-track"><div class="fi-fill decoy" style="width:0.0%"></div></div>
+        <div class="fi-val">0.000</div>
       </div>
-      <p class="fi-decoy-note">(‡) Decoy Features: temperature ו-humidity אינם נכנסים לנוסחת ה-TCI האנליטית; ירידת המשקל שלהם מאשרת שהמודל לא למד מהם מידע ש"דלף" מהיעד.</p>
+      <p class="fi-decoy-note">(‡) Decoy Features: temperature ו-humidity אינם נכנסים לנוסחת ה-TCI האנליטית; canopy_ratio ו-building_height הצטרפו כ-decoys ב-2026-07-10, כש-shadow_cov אוחד לכלול גם צל-עצים וגם צל-מבנים ובלע את תפקידם הפיזי. ירידת המשקל של כולם מאשרת שהמודל לא למד מהם מידע ש"דלף" מהיעד.</p>
     </div>
   </div>
 
@@ -700,9 +700,9 @@ tr.tr-base   td { color: var(--muted); }
     </div>
     <div class="check-body">
       <h2 class="check-title">ניתוח שגיאות לפי תת-קבוצות (Error Slicing)</h2>
-      <span class="check-badge badge-pass">PASS · MAE=0.063 · max_error=0.722</span>
+      <span class="check-badge badge-pass">PASS · MAE=0.043 · max_error=0.662</span>
 
-      <p class="slice-note">RMSE מחושב בנפרד לכל רבעון של כל פיצ'ר — גוון חם מעיד על קושי יחסי של המודל בטווח זה:</p>
+      <p class="slice-note">RMSE מחושב בנפרד לכל רבעון של כל פיצ'ר — גוון חם מעיד על קושי יחסי של המודל בטווח זה. shadow_angle הוחלף ב-canopy_ratio (עכשיו decoy) — אין עוד shadow_angle במערכת:</p>
       <div class="slice-grid">
         <div class="sg-head"></div>
         <div class="sg-head">Q1 נמוך</div>
@@ -711,31 +711,31 @@ tr.tr-base   td { color: var(--muted); }
         <div class="sg-head">Q4 גבוה</div>
 
         <div class="sg-feat">sun_altitude</div>
-        <div class="sg-cell" style="background:hsl(168,42%,45%)">0.062</div>
-        <div class="sg-cell" style="background:hsl(52,75%,46%)">0.135</div>
-        <div class="sg-cell" style="background:hsl(78,60%,44%)">0.115</div>
-        <div class="sg-cell" style="background:hsl(66,68%,44%)">0.125</div>
+        <div class="sg-cell" style="background:hsl(168,42%,45%)">0.044</div>
+        <div class="sg-cell" style="background:hsl(130,52%,45%)">0.068</div>
+        <div class="sg-cell" style="background:hsl(92,62%,46%)">0.092</div>
+        <div class="sg-cell" style="background:hsl(30,78%,46%)">0.131</div>
 
         <div class="sg-feat">cloud_cover</div>
-        <div class="sg-cell" style="background:hsl(110,52%,43%)">0.100</div>
-        <div class="sg-cell" style="background:hsl(30,78%,46%)">0.148</div>
-        <div class="sg-cell" style="background:hsl(88,58%,43%)">0.119</div>
-        <div class="sg-cell" style="background:hsl(155,44%,44%)">0.072</div>
+        <div class="sg-cell" style="background:hsl(95,61%,46%)">0.090</div>
+        <div class="sg-cell" style="background:hsl(114,56%,45%)">0.078</div>
+        <div class="sg-cell" style="background:hsl(67,68%,46%)">0.108</div>
+        <div class="sg-cell" style="background:hsl(109,57%,45%)">0.081</div>
 
         <div class="sg-feat">temperature</div>
-        <div class="sg-cell" style="background:hsl(155,44%,44%)">0.072</div>
-        <div class="sg-cell" style="background:hsl(58,72%,45%)">0.130</div>
-        <div class="sg-cell" style="background:hsl(66,68%,44%)">0.125</div>
-        <div class="sg-cell" style="background:hsl(96,54%,43%)">0.108</div>
+        <div class="sg-cell" style="background:hsl(109,57%,45%)">0.081</div>
+        <div class="sg-cell" style="background:hsl(84,64%,46%)">0.097</div>
+        <div class="sg-cell" style="background:hsl(100,60%,46%)">0.087</div>
+        <div class="sg-cell" style="background:hsl(93,61%,46%)">0.091</div>
 
-        <div class="sg-feat">shadow_angle</div>
-        <div class="sg-cell" style="background:hsl(138,46%,44%)">0.085</div>
-        <div class="sg-cell" style="background:hsl(108,52%,43%)">0.101</div>
-        <div class="sg-cell" style="background:hsl(94,55%,43%)">0.109</div>
-        <div class="sg-cell" style="background:hsl(32,76%,46%)">0.146</div>
+        <div class="sg-feat">canopy_ratio ‡</div>
+        <div class="sg-cell" style="background:hsl(139,50%,45%)">0.062</div>
+        <div class="sg-cell" style="background:hsl(109,57%,45%)">0.081</div>
+        <div class="sg-cell" style="background:hsl(52,72%,46%)">0.117</div>
+        <div class="sg-cell" style="background:hsl(95,61%,46%)">0.090</div>
       </div>
       <p class="slice-insight">
-        הקטעים עם שגיאה גבוהה יחסית: shadow_angle Q4 (RMSE=0.146) ו-cloud_cover Q2 (RMSE=0.148) — תנאים של צל קיצוני (שמש ניצבת לרחוב) וכיסוי ענן חלקי.
+        הקטעים עם שגיאה גבוהה יחסית: sun_altitude Q4 (RMSE=0.131, שמש גבוהה עם צללים קצרים — הכי קשה למודל) ו-canopy_ratio Q3 (RMSE=0.117 — decoy, שונות שיורית לא-סיבתית).
       </p>
 
       <p class="worst-note">חמש תחזיות בעלות השגיאה הגדולה ביותר (מתוך 750 שורות test):</p>
@@ -743,26 +743,26 @@ tr.tr-base   td { color: var(--muted); }
         <div>y_true</div><div>y_pred</div><div>|error|</div><div>scale</div>
       </div>
       <div class="worst-row">
-        <div>4.424</div><div>5.146</div><div>0.722</div>
+        <div>4.154</div><div>4.816</div><div>0.662</div>
         <div><div class="error-track"><div class="error-fill" style="width:100%"></div></div></div>
       </div>
       <div class="worst-row">
-        <div>2.615</div><div>3.308</div><div>0.694</div>
-        <div><div class="error-track"><div class="error-fill" style="width:96.1%"></div></div></div>
+        <div>7.532</div><div>6.936</div><div>0.597</div>
+        <div><div class="error-track"><div class="error-fill" style="width:90.2%"></div></div></div>
       </div>
       <div class="worst-row">
-        <div>1.919</div><div>2.476</div><div>0.557</div>
-        <div><div class="error-track"><div class="error-fill" style="width:77.2%"></div></div></div>
+        <div>4.904</div><div>4.312</div><div>0.592</div>
+        <div><div class="error-track"><div class="error-fill" style="width:89.4%"></div></div></div>
       </div>
       <div class="worst-row">
-        <div>4.080</div><div>4.622</div><div>0.542</div>
-        <div><div class="error-track"><div class="error-fill" style="width:75%"></div></div></div>
+        <div>5.390</div><div>4.891</div><div>0.500</div>
+        <div><div class="error-track"><div class="error-fill" style="width:75.5%"></div></div></div>
       </div>
       <div class="worst-row">
-        <div>4.876</div><div>4.336</div><div>0.540</div>
-        <div><div class="error-track"><div class="error-fill" style="width:74.8%"></div></div></div>
+        <div>3.417</div><div>3.814</div><div>0.398</div>
+        <div><div class="error-track"><div class="error-fill" style="width:60.1%"></div></div></div>
       </div>
-      <p class="worst-tail">שגיאת החיזוי המקסימלית: 0.722 — כ-8% מטווח ה-TCI הכולל [1, 10].</p>
+      <p class="worst-tail">שגיאת החיזוי המקסימלית: 0.662 — כ-7% מטווח ה-TCI הכולל [1, 10].</p>
     </div>
   </div>
 
@@ -773,7 +773,7 @@ tr.tr-base   td { color: var(--muted); }
   <div class="verdict-score">5/5</div>
   <div>
     <p class="verdict-text">המודל עובר את כל חמש בדיקות האימות — הביצועים משקפים תוצאות אמינות ולא ארטיפקט טכני.</p>
-    <p class="verdict-sub">SHADY · M3 · RandomForest TCI Regressor · RMSE=0.113 · R²=0.996 · 5,000 rows · random_state=42 · 70/15/15 split</p>
+    <p class="verdict-sub">SHADY · M3 · RandomForest TCI Regressor · RMSE=0.090 · R²=0.9985 · 5,000 rows · random_state=42 · 70/15/15 split · shadow_cov מאוחד (מבנים+עצים)</p>
   </div>
 </div>
 
