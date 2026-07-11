@@ -11,7 +11,7 @@ SHADY — מערכת ניווט עירוני להולכי רגל המוצאת מ
 |------|--------|------------|
 | עיריית ת"א (opendata.tel-aviv.gov.il) | CSV | **צנטרואידים** של ~45,783 מבנים (lat/lon + גובה + קומות) — `data/buildings_clean.csv`. ⚠️ קובץ הפוליגונים המקורי (`tel_aviv_buildings.geojson`) **אינו בפרויקט** — יש רק צנטרואידים |
 | מפ"י (data.gov.il) | Parquet | ~231,000 פוליגוני חופת עצים באזור ת"א — `data/national_canopy_clean.parquet` |
-| OSMnx | GraphML | רשת רחובות ת"א — cache ב-`data/tel_aviv_walk.graphml` |
+| OSMnx | GraphML | רשת רחובות ת"א — `data/tel_aviv_walk.graphml`, **מועלה ל-repo** (נדרש ל-deploy, ר' Key Decisions) |
 | Open-Meteo API | JSON (שעתי) | `temperature_2m`, `relative_humidity_2m`, `cloud_cover` |
 | Precomputed (spatial.py) | Parquet | פיצ'רים סטטיים לכל קשת — `data/edges_features.parquet` (`mean_building_height`, `tree_canopy_ratio`, `street_azimuth`) |
 | Precomputed (precompute_shadow.py) | Parquet | כיסוי-צל **מאוחד** (מבנים+עצים) פר קשת × שעה (6:00–19:00, יום קיץ) — `data/shadow_coverage.parquet` |
@@ -59,11 +59,14 @@ pysolar, scikit-learn, networkx, pytest, groq, shapely, scipy
 - **תפקיד:** חילוץ פרמטרים בלבד מטקסט חופשי עברית/אנגלית — הLLM לא מחשב, רק מחלץ
 - **שדות פלט (7):** `origin`, `destination`, `hour` (0.0–23.99 decimal; null=לא צוינה שעה כלל), `date` (YYYY-MM-DD; null=היום), `mode` ("shaded"/"fast"), `shade_level` (null/"short"/"balanced"/"max"), `recommendation` (הסבר אוטומטי ≤100 תווים)
 - **`hour` בשעות ערב/לילה (מחוץ ל-6-19, טווח הניווט המוצל):** נשמר כערך אמיתי (למשל 22.0 ל"10 בלילה") ולא מאופס ל-null — `mode='fast'`/`shade_level='short'`/`recommendation='night'` מסמנים את מצב-הלילה בנפרד. תיקון מ-2026-07-10: קודם השעה אופסה ל-null בכל שעת חושך, מה שגרם ל-`app.py` לאבד את השעה שהמשתמש ביקש ולהציג שעה נוכחית אקראית (הבאג שנצפה כ"18:30 מסתורי"). `routing.sun_position`/`plan_route` תומכים בשעון מלא ונופלים אוטומטית ל"מהיר" כששעת השמש שלילית — אין מגבלה טכנית על 6-19 מעבר לחישוב הצל.
-- **לוגיקת מזג-אוויר:** אם מועברים `sun_altitude`/`cloud_cover` — LLM ממליץ אוטומטית "fast"/"short" בלילה/עננות כבדה
+- **לוגיקת מזג-אוויר:** אם מועברים `sun_altitude`/`cloud_cover` — LLM ממליץ אוטומטית "fast"/"short" בלילה/עננות כבדה (כשהמשתמש לא ציין העדפה)
+- **כלל לילה דטרמיניסטי (2026-07-11):** ב-`_validate` — אם השעה מחוץ ל-[6,19] (או שמש מתחת לאופק) → כופה `mode=fast`/`shade_level=short`/`recommendation=night`, **גובר על כל בקשת צל מפורשת** בטקסט. הוראת פרומפט לבדה הסתברותית; הכפייה בקוד מבטיחה 100%.
+- **זיהוי תאריכים עבריים (2026-07-11):** `_weekday_reference(today)` מזריק לפרומפט טבלת 15 ימים (ISO + שם-יום עברי + סימון "השבוע"/"שבוע הבא", שבוע ישראלי מתחיל ראשון). ה-LLM **בוחר** מהטבלה במקום לחשב תאריך — פותר "ביום שני בשבוע הבא" (LLMs לא אמינים בחשבון תאריכים).
 - **Hebrew normalization:** קידומות דקדוקיות (מ/ל/ב/ה) מנוקות משמות מקומות לפני geocoding
 - **Fallback:** כל כשלון (auth, network, JSON parse, שדות חסרים) → `{"error": "הודעה ידידותית בעברית"}`
 - **תלות:** `groq` (optional — מחזיר שגיאה אם הספריה חסרה; lazy import)
-- **בדיקות:** `tests/test_agent.py` — validation, coercion, fallback ללא קריאות רשת
+- **תובנת מסלול — tool use אמיתי (M4, 2026-07-11):** `recommend_route_insight(user_text, api_key, metrics_fn)` — רושם כלי `evaluate_route`; **Turn 1** ה-LLM קורא לכלי → הקוד מריץ `metrics_fn()` (= `compute_length_route` + `compute_route_insights` ב-routing.py — "המודל רץ") → **Turn 2** ה-LLM מנסח משפט עברית מעוגן ("האריך את ההליכה ב-X דק', הוריד TCI ב-Y, חסך Z דק' חשיפה גבוהה"). **המספרים תמיד מהקוד, ה-LLM רק מנסח.** Fallback: `format_insight_fallback(insights)` (משפט מחושב) כשאין מפתח/Groq — עובד מקומית בלי מפתח, לעולם לא שובר. הכלי **מריץ בפועל** ולא מהדהד מספרים מוכנים (קריטי לעמידה ב-M4).
+- **בדיקות:** `tests/test_agent.py` (validation, coercion, night-override, weekday-table, insight fallback) + `tests/test_insights.py` (compute_route_insights + מבחן multigraph ל-compute_length_route) — הכל ללא קריאות רשת
 
 ---
 
@@ -111,6 +114,7 @@ Route → Folium Map (TCI color gradient) → Streamlit UI (עמוד ניווט 
 alyssa-roni/
 ├── app.py                      # Streamlit entry point (עמוד יחיד: ניווט + expander מקופל לחומרי הקורס)
 ├── .streamlit/config.toml      # ערכת עיצוב (כחול-ירוק=צל, כתום-צהוב=שמש, מיושר מול _tci_color())
+├── .gitattributes              # מסמן data/tel_aviv_walk.graphml כבינארי (-text) — בלי המרת EOL בין Win/Linux
 ├── precompute_features.py      # הרצה חד-פעמית: יוצר edges_features.parquet
 ├── precompute_shadow.py        # הרצה חד-פעמית: יוצר shadow_coverage.parquet (כיסוי-צל מאוחד פר קשת×שעה)
 │   # הערה: tel_aviv_buildings.geojson, download_buildings.py, check_data.py,
@@ -122,20 +126,21 @@ alyssa-roni/
 │   ├── shadow_coverage.parquet     # כיסוי-צל: u,v,key + עמודה לכל שעה (59,086 × 27)
 │   ├── tci_model.joblib            # מודל TCI מאומן (RandomForest, פיצ'ר shadow_cov)
 │   ├── model_results.json          # תוצאות השוואת המודלים — מוצג בטאב אודות
-│   ├── tel_aviv_walk.graphml       # רשת רחובות (cache מ-OSMnx)
+│   ├── tel_aviv_walk.graphml       # רשת רחובות מ-OSMnx — **מועלה ל-repo** (נדרש ל-deploy; בלעדיו הענן מוריד גרף לא-תואם)
 │   ├── climate_fallback.json       # ממוצעים חודשיים (T, humidity, cloud_cover)
 │   └── screenshots/                # PNG לממשק
 ├── src/
-│   ├── agent.py            # M4: extract_route_params() — Groq LLM, coercion, validation, Hebrew normalization
+│   ├── agent.py            # M4: extract_route_params() (חילוץ+כלל-לילה+טבלת-תאריכים) · recommend_route_insight() (tool use) · format_insight_fallback()
 │   ├── data.py             # build_tci_df() — טבלת אימון TCI (יעד+פיצ'ר shadow_cov מאוחד), ללא Streamlit
 │   ├── spatial.py          # compute_edge_features() — מבנים buffer 25מ' (צנטרואידים), עצים buffer 10מ' (חיתוך פוליגונים); _load_trees() גם לשימוש precompute_shadow.py
 │   ├── model.py            # M3 שלבים 3-8: train/val/test, baseline, 3 מודלים, בחירת מנצח, שמירה
-│   ├── routing.py          # plan_route (DI orchestrator), geocode_address (3-stage), compute_tci_weights, compute_shaded_route (A*+TCI), build_route_map
+│   ├── routing.py          # plan_route (DI orchestrator + תקרת עיקוף), geocode_address (3-stage), compute_tci_weights, compute_shaded_route (A*+TCI), compute_length_route/compute_route_insights (תובנות), shortest_walk_distance, build_route_map
 │   └── weather.py          # get_current_weather() — Open-Meteo + fallback
 ├── notebooks/01_eda.ipynb  # EDA
 ├── outputs_M3/             # דוח model_checks.html (מקור; docs/ הוא ההעתק המפורסם ל-GitHub Pages)
 ├── tests/
-│   ├── test_agent.py       # בדיקות validation, coercion ו-fallback ל-agent.py (ללא קריאות רשת)
+│   ├── test_agent.py       # validation, coercion, night-override, weekday-table, insight fallback (ללא רשת)
+│   ├── test_insights.py    # compute_route_insights + מבחן multigraph ל-compute_length_route
 │   └── test_smoke.py       # import src בלבד — טסט עשן טריוויאלי
 ├── requirements.txt
 ├── WORKLOG.md              # יומן עבודה לפי מושבים
@@ -170,6 +175,9 @@ alyssa-roni/
 - גבהי מבנים חסרים מחושבים ע"י נוסחה (לא ML): `height = 2.95 * floors + 5.21`.
 - פיצ'רים סטטיים מראש ב-`edges_features.parquet`; כיסוי-צל מראש ב-`shadow_coverage.parquet`; גרף רחובות ב-cache `tel_aviv_walk.graphml`.
 - **ניווט מיושם:** מצב "מוצל" = **A\*** (Haversine heuristic ×0.5, admissible) עם משקל `TCI^shade_factor × אורך × העדפת-ירוק`; מצב "מהיר" = OSRM. בטאב הניווט יש **בורר שעה** (6:00–19:00): השמש אמיתית לתאריך של היום בשעה הנבחרת, מזג האוויר חי, ורק `shadow_cov` מיוחס ליום קיץ (snap למצב-השמש הקרוב). בשעות שקיעה/זריחה/זנית אין ניגודיות צל → המסלול המוצל מתכנס למהיר (תקין).
+- **תקרת עיקוף (`DETOUR_CAP=1.6`, 2026-07-11):** המסלול המוצל לא יעלה על ~1.6× אורך המסלול הקצר. `plan_route` מוריד את `shade_factor` בהדרגה (עם `shortest_walk_distance` כבסיס) עד שהמסלול עומד בתקרה, למניעת פיתולים קיצוניים ששיפור הנוחות בהם זניח (מדידה: exp 3.0→2.44× אורך מול exp 2.0→1.49×, כמעט אותה נוחות).
+- **תובנת מסלול = tool use (M4, 2026-07-11):** מסלול-הבסיס להשוואה = `compute_length_route` (הקצר-ביותר על הגרף, weight="length" — **חובה מחרוזת, לא lambda**: ב-MultiDiGraph ה-lambda מקבל `{key:data}` ומזער צמתים במקום מרחק). `HIGH_EXPOSURE_TCI=5.5` (ה-TCI מגיע ל-~6.4 לכל היותר אחה"צ, סף 7 היה מאפס את מדד החשיפה ברוב היום). ר' פירוט בסעיף LLM Agent.
+- **פריסה (Streamlit Cloud, 2026-07-11):** `data/tel_aviv_walk.graphml` **מועלה ל-repo** (לא רק cache!) עם `.gitattributes` שמסמן אותו בינארי (`-text`, בלי המרת EOL). בלעדיו הענן מוריד גרף OSM טרי שלא תואם ל-`edges_features.parquet` → מקטעי "TCI לא זמין". `osmnx` מפונטן `>=1.9,<2.0` — osmnx 2.x שינה API ותלויות, הקוד כתוב ל-1.x (מקומית 1.9.3). האפליקציה של rony פרוסה מ-**fork** → כל פרסום דורש push לריפו הקורס + **Sync fork** ב-GitHub.
 - **Geocoding מדורג ב-3 שלבים** (`geocode_address()` ב-`routing.py`): (1) Nominatim — 3 וריאנטי שאילתה; (2) Overpass API — שמות POI ללא כתובת; (3) Photon — fuzzy geocoder שסובל שגיאות כתיב וחיפוש שם חנות.
 - **`shade_level` + `shade_factor` exponent:** AGENT מחלץ `shade_level` (null/"short"/"balanced"/"max") → ממופה ל-`shade_factor` מספרי (1.0/2.0/3.0 בהתאמה — 3 רמות, לא 4, מ-2026-07-09) → `TCI^shade_factor` מגביר את ניגודיות המשקלות (shade_factor=2.0: TCI 2→4, TCI 8→64).
 - **Pedestrian bonus:** קשתות מסוג footway/pedestrian מקבלות מקדם 0.8× במשקל — עידוד מדרכות וכבישים לא-ראשיים.
