@@ -1,8 +1,9 @@
 """בדיקות ל-src/agent.py — ולידציה ו-Fallback בלבד (ללא קריאת רשת)."""
+from datetime import date
 from src.agent import (
     _validate, _coerce_hour, _coerce_mode, _coerce_shade_level, _coerce_recommendation,
     extract_route_params, _ERROR_MSG,
-    format_insight_fallback, recommend_route_insight,
+    format_insight_fallback, recommend_route_insight, _weekday_reference,
 )
 
 _TODAY = "2026-07-03"
@@ -104,6 +105,19 @@ def test_recommendation_coercion():
     assert _coerce_recommendation("HOT") == "☀️ חם ושמשי — בחרתי צל מקסימלי"
     assert _coerce_recommendation("warm") == "🌤 מזג אוויר חם — בחרתי מסלול מוצל"
     assert _coerce_recommendation("🌙 חשוך משובש") is None   # טקסט חופשי משובש → None
+
+
+def test_weekday_reference_next_week():
+    # 2026-07-11 = יום שבת. "יום שני בשבוע הבא" צריך להיות 13.7 (לא היום).
+    ref = _weekday_reference(date(2026, 7, 11))
+    monday = [l for l in ref.splitlines() if l.startswith("2026-07-13")][0]
+    assert "יום שני" in monday and "שבוע הבא" in monday
+    # מאמצע השבוע (רביעי 8.7): חמישי 9.7 = השבוע, שני 13.7 = שבוע הבא
+    ref2 = _weekday_reference(date(2026, 7, 8))
+    thu = [l for l in ref2.splitlines() if l.startswith("2026-07-09")][0]
+    mon = [l for l in ref2.splitlines() if l.startswith("2026-07-13")][0]
+    assert "השבוע" in thu
+    assert "שבוע הבא" in mon
 
 
 def test_empty_text_returns_error_without_network():

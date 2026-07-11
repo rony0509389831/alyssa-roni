@@ -26,9 +26,30 @@ _ERROR_MSG = (
 # מילות מפתח לנרמול mode (גיבוי אם ה-LLM מחזיר ערך לא צפוי)
 _FAST_HINTS = ("fast", "quick", "short", "מהיר", "מהר", "קצר")
 
+# שם-יום עברי לפי datetime.weekday() (שני=0 ... ראשון=6)
+_HE_WEEKDAYS = {0: "יום שני", 1: "יום שלישי", 2: "יום רביעי", 3: "יום חמישי",
+                4: "יום שישי", 5: "יום שבת", 6: "יום ראשון"}
+_WEEK_LABEL = {0: "השבוע", 1: "שבוע הבא", 2: "בעוד שבועיים"}
+
+
+def _weekday_reference(today_d) -> str:
+    """טבלת 15 הימים הקרובים: תאריך ISO + שם-יום עברי + סימון שבוע (השבוע/שבוע הבא).
+
+    ה-LLM גרוע בחשבון תאריכים — במקום שיחשב "יום שני בשבוע הבא", הוא בוחר מהטבלה.
+    השבוע הישראלי מתחיל ביום ראשון, לכן חלוקת השבועות מיושרת ליום ראשון."""
+    today_week_start = today_d - _td(days=(today_d.weekday() + 1) % 7)  # יום ראשון של השבוע
+    rows = []
+    for i in range(15):
+        d = today_d + _td(days=i)
+        d_week_start = d - _td(days=(d.weekday() + 1) % 7)
+        offset = (d_week_start - today_week_start).days // 7
+        tag = "היום" if i == 0 else _WEEK_LABEL.get(offset, "")
+        rows.append(f"{d.isoformat()} = {_HE_WEEKDAYS[d.weekday()]}" + (f" ({tag})" if tag else ""))
+    return "\n".join(rows)
+
 
 def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
-                  day2_str: str = "") -> str:
+                  day2_str: str = "", date_ref: str = "") -> str:
     """בונה system prompt עם תאריכים ותנאים נוכחיים מוחדרים."""
     _ctx_block = (
         f"\n\nCURRENT CONDITIONS (use to recommend shade_level when user doesn't specify):\n"
@@ -58,7 +79,12 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         f'"מחרתיים"/"day after tomorrow"/"overmorrow" → {day2_str}. '
         f'Relative: "בעוד X ימים" → add X days to {today_str}. '
         f'"בסוף השבוע"/"שישי" → nearest upcoming Friday. "שבת" → nearest upcoming Saturday. '
-        f'Named days (e.g. "ביום שישי", "ביום חמישי") → nearest upcoming date of that weekday. '
+        f'For Hebrew weekday names ("יום שני", "יום שלישי"...) and week qualifiers '
+        f'("השבוע", "שבוע הבא", "בעוד שבועיים") DO NOT compute the date yourself — '
+        f'look it up in the DATE TABLE below and copy the exact ISO date. '
+        f'"ביום שני בשבוע הבא" → the table row marked (שבוע הבא) for יום שני. '
+        f'A weekday with no qualifier ("ביום שני") → the nearest upcoming row for that weekday.\n'
+        f'DATE TABLE (today={today_str}; use these EXACT dates):\n{date_ref}\n'
         f'Israeli short format "D.M" or "D/M" (e.g. "5.7", "15/8") means day.month, year={today_str[:4]}; '
         f'if that date is already past, use {int(today_str[:4]) + 1}. '
         f'Example: "מחר ב-3" → date="{tomorrow_str}", "מחרתיים בבוקר" → date="{day2_str}", "5.7" → date="{today_str[:4]}-07-05".\n'
@@ -313,7 +339,8 @@ def extract_route_params(
         ctx_parts.append(f"temperature={temperature:.1f}°C")
     if cloud_cover is not None:
         ctx_parts.append(f"cloud_cover={cloud_cover:.0f}%")
-    system = _build_system(today_str, tomorrow_str, ", ".join(ctx_parts), day2_str)
+    system = _build_system(today_str, tomorrow_str, ", ".join(ctx_parts), day2_str,
+                           _weekday_reference(today_d))
     try:
         from groq import Groq                  # ייבוא עצל — לא לשבור את האפליקציה אם הספרייה חסרה
     except ImportError:
