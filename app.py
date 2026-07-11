@@ -621,11 +621,22 @@ _nav_G = _load_nav_graph()
 
 
 def _clamped_now() -> tuple:
-    """שעה נוכחית מעוגלת לחצי-שעה הקרובה, בטווח [6,18] (טווח הניווט המוצל)."""
-    now = datetime.now()
+    """שעה נוכחית מעוגלת לחצי-שעה הקרובה, בטווח [6,18] (טווח הניווט המוצל).
+
+    שעון ישראל במפורש — `datetime.now()` נאיבי מחזיר UTC על Streamlit Cloud (Linux),
+    מה שהזיז את ברירת-המחדל 3 שעות אחורה (19:20 בישראל → 16:20 UTC → 16:00)."""
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo("Asia/Jerusalem"))
     h = min(max(now.hour, 6), 18)
     m = 30 if now.minute >= 30 else 0
     return h, m
+
+
+def _today_il():
+    """התאריך של היום בשעון ישראל — `date.today()` נאיבי נותן תאריך UTC על Streamlit
+    Cloud, שגוי בחלון חצות–03:00 שעון ישראל (ושובר גם את טבלת התאריכים של הסוכן)."""
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("Asia/Jerusalem")).date()
 
 # ── סוכן LLM (M4) ──────────────────────────────────────────────────────────
 # מחלץ פרמטרים מטקסט חופשי וממלא את טופס הניווט שלמטה. חייב לרוץ *לפני* יצירת
@@ -667,7 +678,7 @@ if _agent_submit:
                     pass
             _weather_a = _get_weather_cached()
             _params = extract_route_params(
-                _agent_text, _groq_key, today=_date_cls.today(),
+                _agent_text, _groq_key, today=_today_il(),
                 sun_altitude=_agent_sun_alt,
                 temperature=_weather_a.get("temperature"),
                 cloud_cover=_weather_a.get("cloud_cover"),
@@ -796,10 +807,10 @@ from datetime import date as _date, timedelta as _td, time as _time
 # כי Streamlit אוסר לכתוב ל-session_state של ווידג'ט באותה הרצה שבה הוא כבר נוצר.
 if st.session_state.pop("_reset_datetime", False):
     _h_r, _m_r = _clamped_now()
-    st.session_state["nav_date"] = _date.today()
+    st.session_state["nav_date"] = _today_il()
     st.session_state["nav_time"] = _time(_h_r, _m_r)
 
-_today     = _date.today()
+_today     = _today_il()
 _clamp_h, _clamp_m = _clamped_now()
 _default_time = _time(_clamp_h, _clamp_m)
 
