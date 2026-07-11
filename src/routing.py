@@ -83,6 +83,10 @@ BOULEVARD_WEIGHT_FACTOR = 0.5      # קשת ברחוב ירוק עולה חצי 
 CANOPY_STREET_THRESHOLD = 0.35     # סף כיסוי-עצים לרחוב רגיל
 BOULEVARD_CANOPY_FLOOR = 0.24      # רף נמוך יותר לשדרות (רף רוטשילד ≈24.2%)
 PEDESTRIAN_WEIGHT_FACTOR = 0.8     # שביל ייעודי להולכי-רגל מקבל הנחה 20%
+# תקרת עיקוף: המסלול המוצל לא יעלה על DETOUR_CAP × אורך המסלול הקצר ביותר.
+# מונע פיתולים קיצוניים ששיפור הנוחות בהם זניח (מדידה: exp 3.0 מוסיף ~+90% אורך
+# עבור שיפור TCI זניח). אם המסלול חורג — מורידים את shade_factor בהדרגה עד שעומד בתקרה.
+DETOUR_CAP = 1.6
 EDGES_FEATURES_PATH = Path("data/edges_features.parquet")
 
 _PREF_CACHE = None
@@ -511,6 +515,26 @@ def compute_shaded_route(
     }
 
 
+def shortest_walk_distance(
+    origin_latlon: tuple,
+    dest_latlon: tuple,
+    G: nx.MultiDiGraph = None,
+) -> float:
+    """אורך המסלול הקצר ביותר (מטרים) בין שתי נקודות — בסיס להשוואת עיקוף.
+
+    רץ על אותו גרף כמו המסלול המוצל (weight="length") כדי שההשוואה תהיה עקבית.
+    מחזיר inf אם אין מסלול — כך שתקרת העיקוף לא תיכשל אלא פשוט לא תופעל.
+    """
+    if G is None:
+        G = load_graph()
+    orig_node = ox.nearest_nodes(G, X=origin_latlon[1], Y=origin_latlon[0])
+    dest_node = ox.nearest_nodes(G, X=dest_latlon[1], Y=dest_latlon[0])
+    try:
+        return float(nx.shortest_path_length(G, orig_node, dest_node, weight="length"))
+    except nx.NetworkXNoPath:
+        return float("inf")
+
+
 def sun_position(nav_hour: float, now: datetime = None,
                  lat: float = 32.08, lon: float = 34.77) -> tuple:
     """
@@ -632,10 +656,29 @@ def plan_route(
 
     if on_progress:
         on_progress("מחשב את המסלול המוצל ביותר...")
-    result["route_result"] = compute_shaded_route(
+    route = compute_shaded_route(
         origin_latlon, dest_latlon, wdict, tci_uv, G=graph)
+
+    # תקרת עיקוף: אם המסלול המוצל ארוך מ-DETOUR_CAP × הקצר ביותר, מורידים את
+    # shade_factor בהדרגה (פחות משקל לצל → פחות עיקוף) עד שעומד בתקרה או שהגענו ל-1.0.
+    # ה-weights_fn ממוטמן ב-app, אז הקריאות החוזרות זולות ברוב המקרים.
+    factor = shade_r
+    base_dist = shortest_walk_distance(origin_latlon, dest_latlon, G=graph)
+    capped = False
+    if weights_fn is not None and base_dist not in (0.0, float("inf")):
+        while route["distance_m"] > DETOUR_CAP * base_dist and factor > 1.0:
+            factor = max(1.0, round((factor - 0.5) * 2) / 2)
+            _w, _t = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, factor)
+            if _w is None:
+                break
+            route = compute_shaded_route(origin_latlon, dest_latlon, _w, _t, G=graph)
+            capped = True
+
+    result["route_result"] = route
     result["color"] = "#27ae60"
     result["mode"] = "shaded"
+    result["shade_factor_used"] = factor
+    result["capped"] = capped
     return result
 
 

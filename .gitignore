@@ -1,7 +1,9 @@
 # ==========================================
 # קבצי נתונים ו-GIS (Data & Geospatial Files)
 # ==========================================
-data/tel_aviv_walk.graphml
+# הערה: data/tel_aviv_walk.graphml *כן* מועלה ל-repo (24MB) — חובה שה-deploy
+# ישתמש באותו גרף שממנו נבנו edges_features.parquet ו-shadow_coverage.parquet.
+# אחרת load_graph() מוריד גרף OSM טרי שלא תואם → מקטעי "TCI לא זמין" במסלול.
 tel_aviv_buildings.geojson
 *.geojson
 *.shp

@@ -1,0 +1,3 @@
+# גרף הרחובות נשמר כבינארי — ללא המרת EOL — כדי שהבייטים יישארו זהים בין
+# Windows (פיתוח) ל-Linux (Streamlit Cloud), וש-osmnx יטען אותו זהה בשני הצדדים.
+data/tel_aviv_walk.graphml -text
