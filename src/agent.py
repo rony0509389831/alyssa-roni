@@ -414,6 +414,8 @@ _INSIGHT_SYSTEM = (
     "high_exposure_min_saved (minutes of high sun exposure avoided). "
     "First CALL evaluate_route. Then write ONE short, friendly Hebrew sentence grounded "
     "ONLY in those numbers, describing the tradeoff (a little extra time vs. shade/exposure saved). "
+    "This is a WALKING route for pedestrians — always use walking terms (הליכה / ללכת / הליכה ברגל). "
+    "NEVER use driving terms (נסיעה / לנסוע / דרך). "
     "Never invent or alter a number. Begin the sentence with 🌿. Output only the sentence."
 )
 

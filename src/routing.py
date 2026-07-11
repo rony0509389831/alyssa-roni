@@ -551,10 +551,13 @@ def compute_length_route(
     if orig_node == dest_node:
         raise ValueError("נקודת המוצא והיעד קרובות מדי — נסה כתובות מרוחקות יותר")
     try:
+        # weight="length" (מחרוזת) — networkx לוקח מינימום על קשתות מקבילות ב-MultiDiGraph.
+        # חובה מחרוזת ולא lambda(u,v,d): במולטי-גרף ה-d הוא {key:data} של כל הקשתות, לא
+        # קשת בודדת, אז d.get("length") היה מחזיר None→ברירת מחדל אחידה→מזעור צמתים במקום מרחק.
         path = nx.astar_path(
             G, orig_node, dest_node,
             heuristic=lambda u, v: _haversine_m(G, u, v),
-            weight=lambda u, v, d: d.get("length", 50),
+            weight="length",
         )
     except nx.NetworkXNoPath:
         raise ValueError("לא נמצא מסלול בין הנקודות שהוגדרו")

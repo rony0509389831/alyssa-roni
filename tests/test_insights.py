@@ -1,5 +1,30 @@
-"""בדיקות ל-compute_route_insights (חישוב תובנות המסלול) — פונקציה טהורה, ללא רשת/גרף."""
-from src.routing import compute_route_insights, WALK_SPEED_MPM
+"""בדיקות ל-compute_route_insights + compute_length_route (ללא רשת; גרף סינתטי זעיר)."""
+import networkx as nx
+from src.routing import compute_route_insights, compute_length_route, WALK_SPEED_MPM
+
+
+def _mini_graph():
+    """גרף MultiDiGraph זעיר: ישיר 1→3 = כביש מתפתל 1000מ', עוקף 1→2→3 = 200מ'.
+    הקואורדינטות צמודות (קו-אווירי ≤ אורך הקשת) כדי שהיוריסטיקת ה-haversine תהיה
+    admissible — כמו בגרף רחובות אמיתי (אורכי osmnx תמיד ≥ קו אווירי)."""
+    G = nx.MultiDiGraph()
+    G.graph["crs"] = "EPSG:4326"
+    G.add_node(1, x=34.7700, y=32.080)
+    G.add_node(2, x=34.7708, y=32.080)
+    G.add_node(3, x=34.7710, y=32.080)
+    for u, v in [(1, 3), (3, 1)]:
+        G.add_edge(u, v, key=0, length=1000.0)
+    for u, v in [(1, 2), (2, 1), (2, 3), (3, 2)]:
+        G.add_edge(u, v, key=0, length=100.0)
+    return G
+
+
+def test_compute_length_route_picks_shortest_by_length_on_multigraph():
+    # רגרסיה: weight חייב להיות "length" ולא lambda — אחרת ב-MultiDiGraph נמדד מספר
+    # צמתים (הדוגמה: הישיר 1→3 הוא קפיצה אחת אך 1000מ'; העוקף 1→2→3 הוא 200מ').
+    G = _mini_graph()
+    out = compute_length_route((32.080, 34.7700), (32.080, 34.7710), tci_by_uv={}, G=G)
+    assert round(out["distance_m"]) == 200      # בחר את העוקף הקצר, לא את הישיר הארוך
 
 
 def test_insights_basic():
