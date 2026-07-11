@@ -15,6 +15,8 @@ from datetime import date as _date, timedelta as _td
 MODEL = "llama-3.3-70b-versatile"   # Groq תואם-OpenAI, לא Anthropic
 # 6-19 = טווח הניווט המוצל של האפליקציה (יום). _coerce_hour עצמו מקבל שעון מלא (0-24) —
 # שעות ערב/לילה נשמרות כערך אמיתי (ר' night rule ב-_build_system), לא מאופסות ל-None.
+DAY_START = 6.0    # תחילת טווח הניווט המוצל (שעה)
+DAY_END = 19.0     # סוף טווח הניווט המוצל (שעה)
 
 _ERROR_MSG = (
     "לא הצלחתי להבין את הבקשה — נסו לנסח מחדש "
@@ -75,6 +77,9 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         "(e.g. '22:00', '23:00', '5 בבוקר', '2 לילה') → KEEP that exact hour in the \"hour\" field "
         "(do NOT set it to null — the time picker must reflect what the user actually said), "
         "but ALSO set mode='fast', shade_level='short', recommendation='night'. "
+        "This night rule is ABSOLUTE and OVERRIDES any shade preference the user "
+        "states before or after (e.g. 'ב-5 בבוקר בדרך הכי מוצלת שיש' → STILL "
+        "mode='fast', shade_level='short', recommendation='night' — never 'max'/'shaded'). "
         "This rule applies even if the hour is tomorrow or a future date.\n"
         "Convert times to 24h: 'שלוש אחר הצהריים'/'3pm' -> 15, 'שמונה בבוקר'/'8am' -> 8. "
         "IMPORTANT: Strip Hebrew grammatical prefixes attached to place names — "
@@ -225,7 +230,19 @@ def _coerce_date(value, today_str: str):
     return s
 
 
-def _validate(raw: dict, today_str: str) -> dict:
+def _is_night(hour, sun_altitude=None) -> bool:
+    """לילה = שעה מחוץ לטווח הניווט המוצל [6,19]; או, בהיעדר שעה, שמש מתחת לאופק.
+
+    זהו האות היחיד שקובע כפיית מסלול מהיר — ר' _validate. שעה מפורשת גוברת על
+    sun_altitude (שהוא של הרגע הנוכחי, לא של השעה/התאריך שהמשתמש ביקש)."""
+    if hour is not None:
+        return hour < DAY_START or hour > DAY_END
+    if sun_altitude is not None:
+        return sun_altitude <= 0
+    return False
+
+
+def _validate(raw: dict, today_str: str, sun_altitude=None) -> dict:
     """
     ולידציית פלט ה-LLM. מחזיר {origin, destination, hour, date, mode, shade_level, recommendation}
     או {error: ...} אם חסרים מוצא/יעד (לניווט לא ממציאים כתובת — ר' M4 plan).
@@ -236,7 +253,7 @@ def _validate(raw: dict, today_str: str) -> dict:
     destination = _clean_text(raw.get("destination"))
     if not origin or not destination:
         return {"error": _ERROR_MSG}
-    return {
+    result = {
         "origin": origin,
         "destination": destination,
         "hour": _coerce_hour(raw.get("hour")),
@@ -245,6 +262,13 @@ def _validate(raw: dict, today_str: str) -> dict:
         "shade_level": _coerce_shade_level(raw.get("shade_level")),
         "recommendation": _coerce_recommendation(raw.get("recommendation")),
     }
+    # כלל לילה מוחלט ודטרמיניסטי: בשעת לילה תמיד מסלול מהיר — גובר על כל העדפת
+    # צל שהמשתמש כתב לפני/אחרי (הוראת פרומפט לבדה הסתברותית ולא מספיקה כאן).
+    if _is_night(result["hour"], sun_altitude):
+        result["mode"] = "fast"
+        result["shade_level"] = "short"
+        result["recommendation"] = _coerce_recommendation("night")
+    return result
 
 
 def _parse_json(content: str) -> dict:
@@ -340,4 +364,107 @@ def extract_route_params(
         if any(k in _msg for k in ("connect", "network", "timeout", "ssl")):
             return {"error": "⚠️ בעיית חיבור לרשת — בדקו אינטרנט ונסו שוב"}
         return {"error": f"⚠️ שגיאת Groq: {type(_exc).__name__}: {str(_exc)[:120]}"}
-    return _validate(raw, today_str)
+    return _validate(raw, today_str, sun_altitude)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# M4 tool use: תובנת מסלול. ה-LLM קורא לכלי evaluate_route → הקוד שלנו מריץ את
+# מודל ה-TCI + הראוטינג (metrics_fn) → ה-LLM מנסח משפט מעוגן במספרים (Turn 2).
+# המספרים תמיד מהקוד; ה-LLM לעולם לא ממציא אותם. כשל כלשהו → משפט מחושב (fallback).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def format_insight_fallback(insights: dict) -> str:
+    """משפט תובנה מחושב בעברית ממדדי compute_route_insights — מקור-אמת וגם Fallback.
+
+    פונקציה טהורה (בלי תלות ב-routing/Streamlit): מקבלת את dict המדדים ומנסחת.
+    כשאין עיקוף ממשי (המסלול המוצל כמעט זהה לקצר) — הודעה מתאימה."""
+    extra = insights.get("extra_min") or 0.0
+    tci_saved = insights.get("tci_saved")
+    high_saved = insights.get("high_exposure_min_saved") or 0.0
+    if extra < 0.5 and high_saved < 0.5:
+        return "🌿 המסלול המוצל כמעט זהה לקצר ביותר — כבר מיטבי מבחינת צל."
+    parts = [f"האריך את ההליכה ב-{extra:.0f} דק'" if extra >= 0.5
+             else "כמעט לא האריך את ההליכה"]
+    if tci_saved is not None and tci_saved > 0:
+        parts.append(f"הוריד את ה-TCI הממוצע ב-{tci_saved:.1f}")
+    if high_saved >= 0.5:
+        parts.append(f"חסך כ-{high_saved:.0f} דק' של חשיפה גבוהה לשמש")
+    return "🌿 המסלול המוצל " + ", ".join(parts) + "."
+
+
+_INSIGHT_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "evaluate_route",
+        "description": (
+            "Runs the team's routing + TCI model to compare the chosen shaded route "
+            "against the shortest route. Returns REAL computed metrics "
+            "(extra_min, tci_saved, high_exposure_min_saved). "
+            "You MUST call this to obtain the numbers — never invent them."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}]
+
+_INSIGHT_SYSTEM = (
+    "You explain, in Hebrew, the benefit of a shaded walking route the app just computed. "
+    "A tool `evaluate_route` returns REAL metrics computed by the team's model — "
+    "extra_min (how many minutes longer than the shortest route), "
+    "tci_saved (average TCI reduction; TCI 1=full shade, 10=full sun), "
+    "high_exposure_min_saved (minutes of high sun exposure avoided). "
+    "First CALL evaluate_route. Then write ONE short, friendly Hebrew sentence grounded "
+    "ONLY in those numbers, describing the tradeoff (a little extra time vs. shade/exposure saved). "
+    "Never invent or alter a number. Begin the sentence with 🌿. Output only the sentence."
+)
+
+
+def recommend_route_insight(user_text: str, api_key: str, metrics_fn) -> str:
+    """M4 tool use דו-תורי: מחזיר משפט תובנה בעברית על המסלול המוצל.
+
+    Turn 1 — ה-LLM מחליט לקרוא לכלי evaluate_route.
+    הקוד מריץ metrics_fn() — מודל ה-TCI + הראוטינג של הצוות ("your model runs").
+    Turn 2 — ה-LLM מקבל את המספרים ומחזיר משפט מעוגן.
+
+    metrics_fn: callable ללא ארגומנטים שמחזיר את dict המדדים (compute_route_insights).
+    כל כשל (מפתח חסר / groq חסר / auth / rate / רשת) → format_insight_fallback (משפט מחושב).
+    """
+    def _fallback():
+        try:
+            return format_insight_fallback(metrics_fn())
+        except Exception:
+            return ""   # אין אפילו מדדים — עדיף לא להציג כלום מאשר לקרוס
+
+    if not api_key:                       # אין מפתח (למשל מקומית) → מחושב, בלי קריאת רשת
+        return _fallback()
+    try:
+        from groq import Groq
+    except ImportError:
+        return _fallback()
+
+    try:
+        client = Groq(api_key=api_key)
+        messages = [
+            {"role": "system", "content": _INSIGHT_SYSTEM},
+            {"role": "user", "content": user_text or "הסבר את התועלת של המסלול המוצל."},
+        ]
+        _t0 = time.monotonic()
+        r1 = client.chat.completions.create(
+            model=MODEL, temperature=0, messages=messages,
+            tools=_INSIGHT_TOOL, tool_choice="auto",
+        )
+        msg = r1.choices[0].message
+        if not getattr(msg, "tool_calls", None):
+            return _fallback()            # ה-LLM לא קרא לכלי → לא לסמוך על מספר שהמציא
+        tc = msg.tool_calls[0]
+        metrics = metrics_fn()            # ← המודל/הראוטינג של הצוות רץ כאן
+        messages.append(msg)
+        messages.append({
+            "role": "tool", "tool_call_id": tc.id,
+            "name": tc.function.name, "content": json.dumps(metrics, ensure_ascii=False),
+        })
+        r2 = client.chat.completions.create(model=MODEL, temperature=0, messages=messages)
+        print(f"[TIMING] Groq recommend_route_insight: {time.monotonic() - _t0:.2f}s", flush=True)
+        text = (r2.choices[0].message.content or "").strip()
+        return text if text else format_insight_fallback(metrics)
+    except Exception:
+        return _fallback()

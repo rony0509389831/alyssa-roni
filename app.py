@@ -30,6 +30,7 @@ try:
     from src.routing import (
         geocode_address, compute_tci_weights, compute_route,
         build_route_map, plan_route, load_shadow_coverage,
+        compute_length_route, compute_route_insights,
         _DID_YOU_KNOW,
     )
     _ROUTING = True
@@ -46,7 +47,7 @@ except ImportError:
 
 # M4 — סוכן LLM לחילוץ פרמטרי ניווט מטקסט חופשי (ייבוא groq עצל בתוך הפונקציה)
 try:
-    from src.agent import extract_route_params
+    from src.agent import extract_route_params, recommend_route_insight
     _AGENT = True
 except ImportError:
     _AGENT = False
@@ -971,6 +972,31 @@ if find_btn or _quick_run:
                 fast_result=_fast_result,
             )
             st_folium(route_map, height=520, use_container_width=True, returned_objects=[])
+
+            # תובנת מסלול (M4 tool use): הסוכן קורא לכלי evaluate_route → הקוד מריץ
+            # מסלול-בסיס + השוואה (metrics_fn) → הסוכן מנסח משפט מעוגן במספרים.
+            if _AGENT and plan["mode"] == "shaded" and plan.get("tci_uv"):
+                _tci_uv = plan["tci_uv"]
+
+                def _metrics_fn():
+                    _baseline = compute_length_route(
+                        origin_latlon, dest_latlon, _tci_uv, G=_nav_G)
+                    return compute_route_insights(route_result, _baseline)
+
+                try:
+                    _ins_key = st.secrets.get("GROQ_API_KEY", "")
+                except Exception:
+                    _ins_key = ""
+                with st.spinner("הסוכן מנתח את תועלת המסלול..."):
+                    try:
+                        _insight = recommend_route_insight(
+                            f"הסבר את התועלת של המסלול המוצל מ{origin_input} ל{dest_input}.",
+                            _ins_key, _metrics_fn,
+                        )
+                    except Exception:
+                        _insight = ""
+                if _insight:
+                    st.success(_insight)
 else:
     _preview = folium.Map(location=[32.0853, 34.7818], zoom_start=13,
                           tiles="CartoDB positron")
