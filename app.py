@@ -850,16 +850,6 @@ else:
     _ca = 45.0
     st.caption(f"🕐 {_nh:02d}:{_nm:02d}")
 
-# ── אבחון זמני (v0712a) — לוודא איזו גרסה רצה ב-deploy ומה השרת מחשב כשעה ─────
-try:
-    from zoneinfo import ZoneInfo as _ZId
-    from datetime import timezone as _tzd
-    _il_now = datetime.now(_ZId("Asia/Jerusalem"))
-    _utc_now = datetime.now(_tzd.utc)
-    st.caption(f"🔧 v0712a · IL={_il_now:%H:%M} · UTC={_utc_now:%H:%M} · clamped={_clamped_now()}")
-except Exception as _tzerr:
-    st.caption(f"🔧 v0712a · tz error: {type(_tzerr).__name__}: {_tzerr}")
-
 _shade_opts = {
     "🚶 הכי מהר": 1.0,
     "🌤 מאוזן":   2.0,
