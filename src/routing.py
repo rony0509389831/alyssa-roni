@@ -7,6 +7,7 @@
 """
 from pathlib import Path
 
+import difflib
 import math
 import random
 import re
@@ -281,6 +282,60 @@ _DID_YOU_KNOW = (
 )
 
 
+_STREET_NAMES_CACHE = None
+
+
+# קידומות רחוב שכדאי גם להסיר, כדי שגם "רוטשילד" (בלי "שדרות") יתאים לשם המלא בגרף
+_STREET_PREFIXES = ("שדרות ", "רחוב ", "דרך ", "סמטת ", "שביל ", "מעלה ", "כיכר ")
+
+
+def _street_names() -> list:
+    """מילון קנוני של שמות-רחובות עבריים מגרף ה-OSM — לתיקון שגיאות-כתיב. ממוטמן.
+
+    כולל גם וריאנט בלי קידומת ("שדרות רוטשילד" → גם "רוטשילד"), כדי שמשתמש שכתב
+    את שם הבולוור בלי "שדרות" (ועם שגיאת-כתיב) עדיין יתוקן נכון."""
+    global _STREET_NAMES_CACHE
+    if _STREET_NAMES_CACHE is None:
+        names = set()
+        for _, _, d in load_graph().edges(data=True):
+            n = d.get("name")
+            vals = n if isinstance(n, list) else [n]
+            for x in vals:
+                if not isinstance(x, str):
+                    continue
+                names.add(x)
+                for p in _STREET_PREFIXES:
+                    if x.startswith(p) and len(x) > len(p) + 2:
+                        names.add(x[len(p):])
+        # רק שמות עם אותיות עבריות (מסנן שמות לועזיים/ריקים)
+        _STREET_NAMES_CACHE = [n for n in names if any("א" <= c <= "ת" for c in n)]
+    return _STREET_NAMES_CACHE
+
+
+# מספר בית בסוף הכתובת (עברית: "דיזנגוף 55", אולי עם אות: "55א")
+_HOUSE_NUM_RE = re.compile(r"\s*(\d+\s*[א-ת]?)\s*$")
+
+
+def _correct_street_spelling(address: str) -> str:
+    """מתקן שגיאת-כתיב קטנה בשם רחוב מול מילון שמות ה-OSM (difflib).
+
+    פועל **רק כשיש מספר בית** — סימן ברור לכתובת-רחוב. כך שם עסק/POI (בלי מספר,
+    למשל "שוק הכרמל") לא "מתוקן" בטעות לרחוב דומה. סף גבוה (0.8): מתקן רק התאמה
+    קרובה מאוד ("דיזינגוף"→"דיזנגוף"), משאיר שם לא-מוכר כמות-שהוא.
+    """
+    m = _HOUSE_NUM_RE.search(address or "")
+    if not m:
+        return address                       # אין מספר בית → לא נוגעים (POI/שם חופשי)
+    name_part = address[:m.start()].strip()
+    num = m.group(1).replace(" ", "")
+    if not name_part:
+        return address
+    match = difflib.get_close_matches(name_part, _street_names(), n=1, cutoff=0.8)
+    if match and match[0] != name_part:
+        return f"{match[0]} {num}"
+    return address
+
+
 def geocode_address(address: str, on_progress=None) -> tuple:
     """
     ממיר כתובת טקסטואלית (עברית או אנגלית) לקואורדינטות (lat, lon).
@@ -292,7 +347,11 @@ def geocode_address(address: str, on_progress=None) -> tuple:
 
     on_progress(msg: str), אם הועבר, נקרא לפני כל שלב אמיתי בשרשרת ה-fallback
     (Nominatim → Overpass → Photon) — לצורך הצגת סטטוס חי ל-UI (לא משפיע על הלוגיקה).
+
+    שלב 0 — תיקון שגיאת-כתיב בשם רחוב (כשיש מספר בית) מול מילון שמות ה-OSM, כדי
+    ש-"דיזינגוף 55" (י' מיותרת) לא יחזיר כתובת שגויה מ-Nominatim.
     """
+    address = _correct_street_spelling(address)
     lower = address.lower()
     queries = []
     if "tel" not in lower:
