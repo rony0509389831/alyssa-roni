@@ -18,9 +18,17 @@ MODEL = "llama-3.3-70b-versatile"   # Groq תואם-OpenAI, לא Anthropic
 DAY_START = 6.0    # תחילת טווח הניווט המוצל (שעה)
 DAY_END = 19.0     # סוף טווח הניווט המוצל (שעה)
 
+# אופק תחזית מזג-האוויר: Open-Meteo/האפליקציה תומכים ב-7 ימים קדימה בלבד. תאריך רחוק
+# יותר (או תאריך-עבר) → אין נתוני מזג-אוויר → מחזירים שגיאה במקום נפילה שקטה להיום.
+WEATHER_HORIZON_DAYS = 7
+
 _ERROR_MSG = (
     "לא הצלחתי להבין את הבקשה — נסו לנסח מחדש "
     "(לדוגמה: 'מכיכר רבין לשוק הכרמל ב-3 אחה\"צ, מסלול מוצל')."
+)
+
+_DATE_RANGE_ERR = (
+    "מזג האוויר זמין רק ל-7 הימים הקרובים — בחרו תאריך בטווח הזה."
 )
 
 # מילות מפתח לנרמול mode (גיבוי אם ה-LLM מחזיר ערך לא צפוי)
@@ -89,9 +97,13 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         f'if that date is already past, use {int(today_str[:4]) + 1}. '
         f'Example: "מחר ב-3" → date="{tomorrow_str}", "מחרתיים בבוקר" → date="{day2_str}", "5.7" → date="{today_str[:4]}-07-05".\n'
         '  "mode"           - "shaded" if the user wants a shady/cool/green route, '
-        '"fast" if they want the quickest/shortest route. Default "shaded".\n'
+        '"fast" if they want the quickest/shortest route. Default "shaded". '
+        'If the user is INDIFFERENT to shade ("לא אכפת לי מהצל", "לא משנה לי הצל", '
+        '"doesn\'t matter about shade", "לא חשוב לי צל") → treat as a SPEED preference: '
+        'mode="fast", shade_level="short" (no reason to detour for shade the user does not want).\n'
         '  "shade_level"    - intensity of shade preference. One of:\n'
-        '    "short"    = fastest/shortest, minimal shade weighting (user says "הכי מהיר", "קצר", "fast", "short").\n'
+        '    "short"    = fastest/shortest, minimal shade weighting (user says "הכי מהיר", "קצר", '
+        '"fast", "short", or is indifferent to shade like "לא אכפת לי מהצל").\n'
         '    "balanced" = general/unqualified shade preference ("מוצל", "בצל", "ירוק", "cool", "green route", "shaded").\n'
         '    "max"      = maximum shade even at cost of detours ("הכי מוצל", "צל מקסימלי", "max shade").\n'
         '    null       = let conditions decide (see rules below), or no preference data.\n'
@@ -124,7 +136,9 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         'Input: "מרוטשילד לכיכר רבין ב-10 בלילה"\n'
         f'Output: {{"origin": "רוטשילד", "destination": "כיכר רבין", "hour": 22, "date": null, "mode": "fast", "shade_level": "short", "recommendation": "night"}}\n'
         'Input: "אני רוצה ללכת מרוטשילד לכיכר רבין"\n'
-        f'Output: {{"origin": "רוטשילד", "destination": "כיכר רבין", "hour": null, "date": null, "mode": "shaded", "shade_level": null, "recommendation": null}}'
+        f'Output: {{"origin": "רוטשילד", "destination": "כיכר רבין", "hour": null, "date": null, "mode": "shaded", "shade_level": null, "recommendation": null}}\n'
+        'Input: "מכיכר רבין לשוק הכרמל, לא אכפת לי מהצל"\n'
+        f'Output: {{"origin": "כיכר רבין", "destination": "שוק הכרמל", "hour": null, "date": null, "mode": "fast", "shade_level": "short", "recommendation": null}}'
     )
 
 
@@ -256,6 +270,21 @@ def _coerce_date(value, today_str: str):
     return s
 
 
+def _date_out_of_range(date_str, today_str: str) -> bool:
+    """True אם התאריך מחוץ לאופק תחזית מזג-האוויר [today, today+WEATHER_HORIZON_DAYS].
+
+    None (תאריך לא נמסר = היום) → תמיד בטווח. מחרוזת לא-פרסבילית → נחשבת בטווח
+    (כבר סוננה ל-None ב-_coerce_date; כאן לא מפילים על קלט לא-צפוי)."""
+    if date_str is None:
+        return False
+    try:
+        d = _date.fromisoformat(date_str)
+        today_d = _date.fromisoformat(today_str)
+    except (ValueError, TypeError):
+        return False
+    return d < today_d or d > today_d + _td(days=WEATHER_HORIZON_DAYS)
+
+
 def _is_night(hour, sun_altitude=None) -> bool:
     """לילה = שעה מחוץ לטווח הניווט המוצל [6,19]; או, בהיעדר שעה, שמש מתחת לאופק.
 
@@ -288,6 +317,10 @@ def _validate(raw: dict, today_str: str, sun_altitude=None) -> dict:
         "shade_level": _coerce_shade_level(raw.get("shade_level")),
         "recommendation": _coerce_recommendation(raw.get("recommendation")),
     }
+    # תאריך מחוץ לאופק תחזית מזג-האוויר (עבר, או מעבר ל-7 ימים) → שגיאה: אין נתוני
+    # מזג-אוויר לתאריך כזה, אז עדיף להחזיר הודעה ברורה מאשר לנווט לפי מזג-אוויר שגוי.
+    if _date_out_of_range(result["date"], today_str):
+        return {"error": _DATE_RANGE_ERR}
     # כלל לילה מוחלט ודטרמיניסטי: בשעת לילה תמיד מסלול מהיר — גובר על כל העדפת
     # צל שהמשתמש כתב לפני/אחרי (הוראת פרומפט לבדה הסתברותית ולא מספיקה כאן).
     if _is_night(result["hour"], sun_altitude):

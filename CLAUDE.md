@@ -66,7 +66,9 @@ pysolar, scikit-learn, networkx, pytest, groq, shapely, scipy
 - **Fallback:** כל כשלון (auth, network, JSON parse, שדות חסרים) → `{"error": "הודעה ידידותית בעברית"}`
 - **תלות:** `groq` (optional — מחזיר שגיאה אם הספריה חסרה; lazy import)
 - **תובנת מסלול — tool use אמיתי (M4, 2026-07-11):** `recommend_route_insight(user_text, api_key, metrics_fn)` — רושם כלי `evaluate_route`; **Turn 1** ה-LLM קורא לכלי → הקוד מריץ `metrics_fn()` (= `compute_length_route` + `compute_route_insights` ב-routing.py — "המודל רץ") → **Turn 2** ה-LLM מנסח משפט עברית מעוגן ("האריך את ההליכה ב-X דק', הוריד TCI ב-Y, חסך Z דק' חשיפה גבוהה"). **המספרים תמיד מהקוד, ה-LLM רק מנסח.** Fallback: `format_insight_fallback(insights)` (משפט מחושב) כשאין מפתח/Groq — עובד מקומית בלי מפתח, לעולם לא שובר. הכלי **מריץ בפועל** ולא מהדהד מספרים מוכנים (קריטי לעמידה ב-M4).
-- **בדיקות:** `tests/test_agent.py` (validation, coercion, night-override, weekday-table, insight fallback) + `tests/test_insights.py` (compute_route_insights + מבחן multigraph ל-compute_length_route) — הכל ללא קריאות רשת
+- **אופק תאריכים (2026-07-13):** `WEATHER_HORIZON_DAYS=7` + `_date_out_of_range`. ב-`_validate` תאריך מחוץ ל-`[today, today+7]` (כולל עבר) → `{"error": _DATE_RANGE_ERR}` ("מזג האוויר זמין רק ל-7 הימים הקרובים"). לפני כן `app.py` נפל בשקט להיום; עכשיו שגיאה מפורשת (app.py:686 מציג `{error}` כ-`st.warning`).
+- **אדישות-לצל = מהיר (2026-07-13):** "לא אכפת לי מהצל"/"לא משנה לי צל" → `mode=fast`/`shade_level=short` (הוגדר מפורשות בפרומפט + דוגמה). **החלטה מוצרית** — שני המודלים (הקטן וגם llama-3.3-70b) פירשו את זה כברירת-מחדל shaded, ונקבע שאדישות משמעה מהירות.
+- **בדיקות (2026-07-13, ממופה לשקופיות "green != real"):** דטרמיניסטי בלי מפתח = `tests/test_agent.py` + `tests/test_agent_scenarios.py` (ולידציה/כלל-לילה/תאריך-רחוק/קלט-קצה) + `tests/test_insights.py` (תובנות + תיקון-רחוב) + `tests/test_model_contract.py` (**מונוטוניות + אדישות-decoy** — מודל "תמיד-5" נכשל) + `tests/test_route_flow.py` (גרף סינתטי: הצל משנה מסלול, משקלים נכנסים ל-A*, אינvariantים) + `tests/test_smoke.py` (predict אמיתי). חי-ומגודר-מפתח = `tests/test_agent_llm.py` (`skipif(not GROQ_API_KEY)`, מודל קטן דרך `SHADY_TEST_MODEL`; rate-limit→skip, לא fail). **42 דטרמיניסטיים + 13 חיים עוברים.**
 
 ---
 
@@ -138,10 +140,14 @@ alyssa-roni/
 │   └── weather.py          # get_current_weather() — Open-Meteo + fallback
 ├── notebooks/01_eda.ipynb  # EDA
 ├── outputs_M3/             # דוח model_checks.html (מקור; docs/ הוא ההעתק המפורסם ל-GitHub Pages)
-├── tests/
+├── tests/                  # 42 דטרמיניסטיים (בלי מפתח) + 13 חיים (test_agent_llm, מגודר-מפתח)
 │   ├── test_agent.py       # validation, coercion, night-override, weekday-table, insight fallback (ללא רשת)
-│   ├── test_insights.py    # compute_route_insights + מבחן multigraph ל-compute_length_route
-│   └── test_smoke.py       # import src בלבד — טסט עשן טריוויאלי
+│   ├── test_agent_scenarios.py # Unit דטרמיניסטי: דוחה-זבל, תאריך-רחוק, גבולות כלל-לילה, קלט-קצה
+│   ├── test_model_contract.py  # Integration: מונוטוניות TCI + אדישות-decoy (דורש model+parquet)
+│   ├── test_route_flow.py  # Integration: גרף סינתטי — הצל משנה מסלול, משקלים→A*, אינvariantים
+│   ├── test_agent_llm.py   # Integration חי: הבנת LLM (skipif GROQ_API_KEY; מודל קטן SHADY_TEST_MODEL)
+│   ├── test_insights.py    # compute_route_insights + multigraph ל-compute_length_route + תיקון-רחוב
+│   └── test_smoke.py       # import src + טעינת מודל + predict אמיתי (isfinite, סדר-עמודות)
 ├── requirements.txt
 ├── WORKLOG.md              # יומן עבודה לפי מושבים
 └── CLAUDE.md

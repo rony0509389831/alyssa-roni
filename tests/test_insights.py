@@ -35,6 +35,25 @@ def test_street_typo_correction():
         routing._STREET_NAMES_CACHE = saved
 
 
+def test_street_correction_prefix_variant_and_poi_guard():
+    # (מסלול מפחיד 3, DATA test) — הרחבה: וריאנט-קידומת "שדרות" ושמירה על POI.
+    # _street_names האמיתי מזריק גם צורה מנוקת-קידומת של כל שם; כאן המילון-המדומה
+    # כבר מכיל את שתי הצורות כדי לבדוק את difflib בלבד (בלי טעינת גרף).
+    from src import routing
+    saved = routing._STREET_NAMES_CACHE
+    routing._STREET_NAMES_CACHE = ["שדרות רוטשילד", "רוטשילד", "דיזנגוף", "אלנבי"]
+    try:
+        c = routing._correct_street_spelling
+        # שגיאת-כתיב בשם עם קידומת "שדרות" → מתוקן לצורה המלאה הקרובה במילון
+        assert c("שדרות רוטשילדד 20") == "שדרות רוטשילד 20"   # ד' כפולה בשם-עם-קידומת → תוקן
+        # שם עם מספר-בית תקין נשאר כמות-שהוא (אין שגיאה לתקן)
+        assert c("רוטשילד 20") == "רוטשילד 20"                # תואם ישירות → ללא שינוי
+        # POI (שם עסק, בלי מספר-בית) לא "מתוקן" בטעות לרחוב דומה — שומר על הכוונה המקורית
+        assert c("קפה רוטשילד") == "קפה רוטשילד"              # אין מספר-בית → לא נוגעים (POI)
+    finally:
+        routing._STREET_NAMES_CACHE = saved
+
+
 def test_compute_length_route_picks_shortest_by_length_on_multigraph():
     # רגרסיה: weight חייב להיות "length" ולא lambda — אחרת ב-MultiDiGraph נמדד מספר
     # צמתים (הדוגמה: הישיר 1→3 הוא קפיצה אחת אך 1000מ'; העוקף 1→2→3 הוא 200מ').
