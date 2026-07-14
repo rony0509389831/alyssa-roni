@@ -138,3 +138,73 @@ def test_plan_route_night_falls_back_to_fast(monkeypatch):
                      has_model=True)                             # מבקשים מוצל, אבל זה לילה
     assert out["mode"] == "fast"                                 # נכפה מהיר
     assert out["fallback"] == "night"                            # סיבת-הנפילה = לילה
+
+
+# ---------- תקרת-עיקוף פר-רמה: "הכי מהר" סוף-סוף מקבל הגנה (רצפה 0.0, לא 1.0) ----------
+
+def _stub_weights_fn_factory(tci_by_uv):
+    """weights_fn מדומה: משקל = אורך × TCI^shade_factor לכל קשת (כמו compute_tci_weights
+    האמיתי, בלי מודל/נתונים אמיתיים) — מאפשר לבדוק את לולאת ההתפשרות ב-plan_route
+    בלי רשת/פרקט/מודל אמיתיים."""
+    def _fn(alt_r, az_r, cloud_r, temp_r, hum_r, shade_factor):
+        wdict = {e: _LEN[e] * (tci_by_uv[e] ** shade_factor) for e in tci_by_uv}
+        return wdict, tci_by_uv
+    return _fn
+
+
+def test_fastest_tier_gets_capped_to_shortest_when_detour_too_extreme():
+    """לפני התיקון: 'הכי מהר' (shade_factor=1.0) התחיל כבר ברצפת-הלולאה הישנה (1.0),
+    אז לולאת ההתפשרות מעולם לא רצה לו — היה יכול לצאת בכל אורך בלי שום הגנה.
+    עכשיו הרצפה היא 0.0: אם המסלול-המשוקלל (600מ') ארוך פי 2 מהקצר-ביותר (300מ',
+    הרבה מעל תקרת 1.10×/5-דק' של 'הכי מהר') — הלולאה ממשיכה לרדת עד שהיא
+    מתכנסת בפועל למסלול הקצר ביותר עצמו (shade_factor_used=0.0)."""
+    G = _mini_two_route_graph()
+    tci_map = {**{e: 8.0 for e in _SHORT_EDGES}, **{e: 1.0 for e in _LONG_EDGES}}
+
+    out = plan_route(
+        "A", "B", use_shaded=True, nav_hour=13.0,
+        geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
+        weights_fn=_stub_weights_fn_factory(tci_map),
+        has_model=True, graph=G, shade_factor=1.0,   # "הכי מהר"
+    )
+
+    assert out["mode"] == "shaded"
+    assert out["capped"] is True                              # ההתפשרות אכן הופעלה
+    assert out["shade_factor_used"] == 0.0                    # ירד עד הרצפה החדשה
+    assert round(out["route_result"]["distance_m"]) == 300    # התכנס למסלול הקצר-ביותר בפועל
+
+
+def test_balanced_tier_accepts_moderate_detour_but_fastest_does_not():
+    """אותו תרחיש-עיקוף מתון בדיוק (1.2× — 360מ' לעומת בסיס 300מ') מתקבל בשקט
+    ע"י 'מאוזן' (תקרתו 1.30×, אין צורך בהתפשרות כלל), אבל נדחה ע"י 'הכי מהר'
+    (תקרתו המחמירה 1.10× — מכריחה התפשרות עד המסלול הקצר-ביותר). מוכיח שלכל
+    רמה יש בפועל סף שונה, לא תקרה גלובלית משותפת אחת."""
+    G = nx.MultiDiGraph()
+    G.graph["crs"] = "EPSG:4326"
+    for n, (x, y) in _XY.items():
+        G.add_node(n, x=x, y=y)
+    _gentle_len = {(1, 2): 150.0, (2, 3): 150.0, (1, 4): 120.0, (4, 5): 120.0, (5, 3): 120.0}
+    for u, v in _SHORT_EDGES + _LONG_EDGES:
+        G.add_edge(u, v, key=0, length=_gentle_len[(u, v)])
+    tci_map = {**{e: 8.0 for e in _SHORT_EDGES}, **{e: 1.0 for e in _LONG_EDGES}}
+
+    def _weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, shade_factor):
+        wdict = {e: _gentle_len[e] * (tci_map[e] ** shade_factor) for e in tci_map}
+        return wdict, tci_map
+
+    balanced = plan_route(
+        "A", "B", use_shaded=True, nav_hour=13.0,
+        geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
+        weights_fn=_weights_fn, has_model=True, graph=G, shade_factor=2.0,   # "מאוזן"
+    )
+    fastest = plan_route(
+        "A", "B", use_shaded=True, nav_hour=13.0,
+        geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
+        weights_fn=_weights_fn, has_model=True, graph=G, shade_factor=1.0,   # "הכי מהר"
+    )
+
+    assert balanced["capped"] is False                             # 1.2× כבר בתוך תקרת 1.30× — אין ריכוך
+    assert round(balanced["route_result"]["distance_m"]) == 360
+    assert fastest["capped"] is True                               # אותו 1.2× חורג מתקרת 1.10× של "הכי מהר"
+    assert fastest["shade_factor_used"] == 0.0
+    assert round(fastest["route_result"]["distance_m"]) == 300

@@ -69,6 +69,34 @@ _TA_OVERPASS_BBOX = f"({TA_BBOX[0]},{TA_BBOX[1]},{TA_BBOX[2]},{TA_BBOX[3]})"
 
 _PHOTON_URL = "https://photon.komoot.io/api"
 
+# קודי סטטוס שמצדיקים ניסיון חוזר (rate-limit/שגיאת שרת) — לא 200 עם תוצאה ריקה,
+# זה "לא נמצא" לגיטימי ולא כשל חולף.
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+def _request_with_retry(method: str, url: str, *, retries: int = 1,
+                         backoff: float = 0.5, **kwargs) -> requests.Response:
+    """עטיפת requests.get/post עם ניסיון-חוזר אחד על כשל-רשת חולף (timeout,
+    connection error, 429/5xx) — לא על 200 עם תוצאה ריקה. שירותי הגיאוקוד
+    החינמיים (Nominatim/Overpass/Photon) נוטים לחסימות/rate-limit זמניים,
+    במיוחד מ-IP משותף כמו Streamlit Cloud."""
+    call = requests.get if method == "get" else requests.post
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            resp = call(url, **kwargs)
+        except requests.exceptions.RequestException as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(backoff)
+                continue
+            raise
+        if resp.status_code in _RETRYABLE_STATUS and attempt < retries:
+            time.sleep(backoff)
+            continue
+        return resp
+    raise last_exc
+
 # cache ברמת המודול — נשמר לכל חיי התהליך, נמנע טעינה חוזרת (4.6s) בכל לחיצה
 _GRAPH_CACHE: nx.MultiDiGraph | None = None
 
@@ -88,6 +116,17 @@ PEDESTRIAN_WEIGHT_FACTOR = 0.8     # שביל ייעודי להולכי-רגל �
 # מונע פיתולים קיצוניים ששיפור הנוחות בהם זניח (מדידה: exp 3.0 מוסיף ~+90% אורך
 # עבור שיפור TCI זניח). אם המסלול חורג — מורידים את shade_factor בהדרגה עד שעומד בתקרה.
 DETOUR_CAP = 1.6
+
+# תקרת עיקוף פר-רמת-צל: (תקרת-יחס-אורך, תקרת-תוספת-דקות). לוקחים את המחמיר
+# מבין השניים לכל טיול — יחס-אורך זהה (למשל 1.6×) מתורגם לתוספת-זמן שונה
+# לגמרי בהתאם לאורך הטיול (על טיול קצר זה כמה דקות, על טיול ארוך זה עשרות),
+# אז לא מספיק להסתמך על יחס-אורך בלבד כדי שכל הרמות ירגישו עקביות.
+_TIER_DETOUR_CAPS = {
+    1.0: (1.10, 5.0),    # הכי מהר — כמעט בלי סובלנות לעיקוף
+    2.0: (1.30, 15.0),   # מאוזן
+    3.0: (1.60, 30.0),   # צל — יחס נשאר כפי שהיה (1.6×), תקרת-דקות חדשה ונדיבה יותר
+}
+_DEFAULT_DETOUR_CAP = (DETOUR_CAP, 30.0)   # גיבוי אם shade_r לא אחד מ-3 הערכים המוכרים
 # סף חשיפה גבוהה לשמש: מקטע עם TCI מעל הסף נחשב "חשיפה גבוהה" (לחישוב תובנות המסלול).
 # 5.5 = מחצית עליונה של סקאלת ה-TCI (1-10). נבחר 5.5 ולא 7 כי בפועל ה-TCI מגיע ל-~6.4
 # לכל היותר בשעות אחה"צ (מגיע מעל 7 רק סביב שיא הצהריים) — סף 7 היה משאיר את המדד 0 ברוב היום.
@@ -196,8 +235,8 @@ def _nominatim_search(query: str) -> tuple | None:
         "accept-language": "he,en",
     }
     _t0 = time.monotonic()
-    resp = requests.get(_NOMINATIM_URL, params=params,
-                        headers=_NOMINATIM_HEADERS, timeout=10)
+    resp = _request_with_retry("get", _NOMINATIM_URL, params=params,
+                                headers=_NOMINATIM_HEADERS, timeout=10)
     _log_timing(f"Nominatim '{query}'", time.monotonic() - _t0)
     data = resp.json()
     if data:
@@ -218,8 +257,8 @@ def _overpass_search(name: str) -> tuple | None:
     )
     try:
         _t0 = time.monotonic()
-        resp = requests.post(
-            _OVERPASS_URL,
+        resp = _request_with_retry(
+            "post", _OVERPASS_URL,
             data={"data": query},
             headers=_NOMINATIM_HEADERS,
             timeout=12,
@@ -247,8 +286,8 @@ def _photon_search(query: str) -> tuple | None:
     }
     try:
         _t0 = time.monotonic()
-        resp = requests.get(_PHOTON_URL, params=params,
-                            headers=_NOMINATIM_HEADERS, timeout=6)
+        resp = _request_with_retry("get", _PHOTON_URL, params=params,
+                                    headers=_NOMINATIM_HEADERS, timeout=6)
         _log_timing(f"Photon '{query}'", time.monotonic() - _t0)
         for feat in resp.json().get("features", []):
             coords = feat["geometry"]["coordinates"]
@@ -398,7 +437,8 @@ def geocode_address(address: str, on_progress=None) -> tuple:
     )
 
 
-def compute_route(origin_latlon: tuple, dest_latlon: tuple) -> dict:
+def compute_route(origin_latlon: tuple, dest_latlon: tuple,
+                   tci_by_uv: dict = None, G: nx.MultiDiGraph = None) -> dict:
     """
     מחשב מסלול הליכה בין שתי נקודות דרך OSRM demo server.
 
@@ -407,6 +447,11 @@ def compute_route(origin_latlon: tuple, dest_latlon: tuple) -> dict:
       route_latlon  — רשימת (lat, lon) לאורך המסלול
       distance_m    — מרחק כולל במטרים (מ-OSRM)
       duration_min  — זמן הליכה בדקות (מ-OSRM)
+
+    tci_by_uv (אופציונלי): כשמועבר, מצמידה TCI-פר-מקטע למסלול (ר'
+    `_snap_tci_to_latlon_path`) כדי לאפשר צביעה/השוואה מול מסלול מוצל —
+    מוסיף avg_tci/tci_list/high_exposure_m לתוצאה. כשל בהצמדה לא מפיל את
+    חישוב המסלול עצמו (OSRM עדיין מוחזר בלי TCI).
     """
     lon1, lat1 = origin_latlon[1], origin_latlon[0]
     lon2, lat2 = dest_latlon[1], dest_latlon[0]
@@ -422,11 +467,17 @@ def compute_route(origin_latlon: tuple, dest_latlon: tuple) -> dict:
     # GeoJSON מחזיר [lon, lat] — הופכים ל-(lat, lon) עבור Folium
     route_latlon = [(lat, lon) for lon, lat in route["geometry"]["coordinates"]]
     distance_m = route["distance"]
-    return {
+    result = {
         "route_latlon": route_latlon,
         "distance_m": distance_m,
         "duration_min": distance_m / WALK_SPEED_MPM,
     }
+    if tci_by_uv is not None:
+        try:
+            result.update(_snap_tci_to_latlon_path(route_latlon, tci_by_uv, G or load_graph()))
+        except Exception:
+            pass   # כשל בהצמדה לא יפיל את חישוב המסלול המהיר עצמו
+    return result
 
 
 def compute_tci_weights(
@@ -510,13 +561,18 @@ def compute_tci_weights(
     return weight_dict, tci_by_uv
 
 
+def _haversine_latlon(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """מרחק ישר (מטרים) בין שתי נקודות lat/lon גולמיות."""
+    lat1r = math.radians(lat1); lon1r = math.radians(lon1)
+    lat2r = math.radians(lat2); lon2r = math.radians(lon2)
+    dlat = lat2r - lat1r; dlon = lon2r - lon1r
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1r) * math.cos(lat2r) * math.sin(dlon / 2) ** 2
+    return 6_371_000 * 2 * math.asin(math.sqrt(a))
+
+
 def _haversine_m(G: nx.MultiDiGraph, u, v) -> float:
     """מרחק ישר (מטרים) בין שני צמתים — היוריסטיקה admissible ל-A*."""
-    lat1 = math.radians(G.nodes[u]["y"]); lon1 = math.radians(G.nodes[u]["x"])
-    lat2 = math.radians(G.nodes[v]["y"]); lon2 = math.radians(G.nodes[v]["x"])
-    dlat = lat2 - lat1; dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 6_371_000 * 2 * math.asin(math.sqrt(a))
+    return _haversine_latlon(G.nodes[u]["y"], G.nodes[u]["x"], G.nodes[v]["y"], G.nodes[v]["x"])
 
 
 def compute_shaded_route(
@@ -589,6 +645,69 @@ def _summarize_path(G: nx.MultiDiGraph, path: list, tci_by_uv: dict) -> dict:
         "duration_min":    total_dist / WALK_SPEED_MPM,
         "avg_tci":         float(np.mean(tci_valid)) if tci_valid else None,
         "tci_list":        tci_full,   # תמיד אורך N-1
+        "high_exposure_m": high_exp_m,
+    }
+
+
+_SNAP_MAX_DIST_M = 40.0  # אם הקשת הכי קרובה רחוקה יותר — TCI לא ידוע לאותו מקטע
+
+
+def _point_to_segment_m(p_lat: float, p_lon: float, a_lat: float, a_lon: float,
+                         b_lat: float, b_lon: float) -> float:
+    """מרחק (מטרים) מנקודה לקטע a-b, בהקרנה מקומית equirectangular סביב p — מספיק
+    מדויק לטווח של עשרות-מאות מטרים (לא לחישובי מרחק-מסלול ארוכים)."""
+    coslat = math.cos(math.radians(p_lat))
+    ax = (a_lon - p_lon) * 111_320.0 * coslat
+    ay = (a_lat - p_lat) * 111_320.0
+    bx = (b_lon - p_lon) * 111_320.0 * coslat
+    by = (b_lat - p_lat) * 111_320.0
+    abx, aby = bx - ax, by - ay
+    ab_len2 = abx ** 2 + aby ** 2
+    if ab_len2 == 0:
+        return math.hypot(ax, ay)
+    t = max(0.0, min(1.0, (-ax * abx - ay * aby) / ab_len2))
+    cx, cy = ax + t * abx, ay + t * aby
+    return math.hypot(cx, cy)
+
+
+def _snap_tci_to_latlon_path(route_latlon: list, tci_by_uv: dict,
+                              G: nx.MultiDiGraph) -> dict:
+    """מצמידה TCI-פר-מקטע למסלול חיצוני (למשל OSRM) ע"י מציאת הקשת הקרובה ביותר
+    בגרף המקומי לכל מקטע — כדי לאפשר צביעה/השוואה מול המסלול המוצל, גם כש-
+    המקור המקורי (OSRM) לא נושא אנוטציית TCI בעצמו. קירוב גיאומטרי: מדויק ברוב
+    הרחובות (שם שתי הרשתות חופפות), פחות מדויק היכן ש-OSRM סוטה מרשת ההליכה
+    המקומית (למשל כביש ראשי) — סף _SNAP_MAX_DIST_M מסמן מקרים כאלה כ'לא זמין'.
+
+    ox.distance.nearest_edges מחזיר את הקשת המועמדת הקרובה ביותר (בקירוב, ללא
+    התחשבות בעיוות קו-הרוחב על גרף לא-מוקרן) — אבל את מרחק-הסף עצמו מודדים כאן
+    בנפרד ב-_point_to_segment_m (מטרים אמיתיים), כי ל-return_dist של osmnx על
+    גרף לא-מוקרן אין יחידת-מטרים עקבית (מעלות-קו-אורך/רוחב גולמיות)."""
+    if len(route_latlon) < 2:
+        return {"avg_tci": None, "tci_list": [], "high_exposure_m": 0.0}
+    mid_lats = [(route_latlon[i][0] + route_latlon[i + 1][0]) / 2
+                for i in range(len(route_latlon) - 1)]
+    mid_lons = [(route_latlon[i][1] + route_latlon[i + 1][1]) / 2
+                for i in range(len(route_latlon) - 1)]
+    edges = ox.distance.nearest_edges(G, X=mid_lons, Y=mid_lats)
+    tci_list, tci_valid = [], []
+    high_exp_m = 0.0
+    for i, (u, v, _k) in enumerate(edges):
+        seg_len = _haversine_latlon(*route_latlon[i], *route_latlon[i + 1])
+        mlat, mlon = mid_lats[i], mid_lons[i]
+        edge_dist = _point_to_segment_m(
+            mlat, mlon, G.nodes[u]["y"], G.nodes[u]["x"], G.nodes[v]["y"], G.nodes[v]["x"])
+        tci_val = None if edge_dist > _SNAP_MAX_DIST_M else (tci_by_uv.get((u, v)) or tci_by_uv.get((v, u)))
+        if tci_val is not None:
+            val = float(tci_val)
+            tci_list.append(val)
+            tci_valid.append(val)
+            if val > HIGH_EXPOSURE_TCI:
+                high_exp_m += seg_len
+        else:
+            tci_list.append(None)
+    return {
+        "avg_tci":         float(np.mean(tci_valid)) if tci_valid else None,
+        "tci_list":        tci_list,
         "high_exposure_m": high_exp_m,
     }
 
@@ -792,15 +911,22 @@ def plan_route(
     route = compute_shaded_route(
         origin_latlon, dest_latlon, wdict, tci_uv, G=graph)
 
-    # תקרת עיקוף: אם המסלול המוצל ארוך מ-DETOUR_CAP × הקצר ביותר, מורידים את
-    # shade_factor בהדרגה (פחות משקל לצל → פחות עיקוף) עד שעומד בתקרה או שהגענו ל-1.0.
-    # ה-weights_fn ממוטמן ב-app, אז הקריאות החוזרות זולות ברוב המקרים.
+    # תקרת עיקוף פר-רמה: אם המסלול המוצל ארוך מהתקרה האפקטיבית של הרמה שנבחרה
+    # (המחמיר מבין תקרת-האחוזים ותקרת-הדקות שלה, ר' _TIER_DETOUR_CAPS), מורידים
+    # את shade_factor בהדרגה (פחות משקל לצל → פחות עיקוף) עד שעומד בתקרה או
+    # שהגענו ל-0.0 (מסלול קצר-ביותר טהור — רצפה אמיתית, לא 1.0: כך שגם "הכי
+    # מהר" מקבל הגנה, לא רק "מאוזן"/"צל"). ה-weights_fn ממוטמן ב-app, אז
+    # הקריאות החוזרות זולות ברוב המקרים.
+    ratio_cap, time_cap_min = _TIER_DETOUR_CAPS.get(shade_r, _DEFAULT_DETOUR_CAP)
     factor = shade_r
     base_dist = shortest_walk_distance(origin_latlon, dest_latlon, G=graph)
     capped = False
     if weights_fn is not None and base_dist not in (0.0, float("inf")):
-        while route["distance_m"] > DETOUR_CAP * base_dist and factor > 1.0:
-            factor = max(1.0, round((factor - 0.5) * 2) / 2)
+        base_time_min = base_dist / WALK_SPEED_MPM
+        effective_cap = (min(ratio_cap, 1 + (time_cap_min / base_time_min))
+                          if base_time_min > 0 else ratio_cap)
+        while route["distance_m"] > effective_cap * base_dist and factor > 0.0:
+            factor = max(0.0, round((factor - 0.5) * 2) / 2)
             _w, _t = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, factor)
             if _w is None:
                 break
@@ -828,22 +954,30 @@ def build_route_map(
 ) -> folium.Map:
     """
     בונה מפת Folium עם המסלול, נקודות ההתחלה והסיום.
-    tci_list: רשימת TCI פר-קשת לצביעת רמזור (ירוק/כתום/אדום).
-    fast_result: תוצאת מסלול מהיר להשוואה (PolyLine כחול מקווקו).
+    tci_list: רשימת TCI פר-קשת לצביעת רמזור (ירוק/כתום/אדום) למסלול המוצל.
+    fast_result: תוצאת מסלול מהיר להשוואה — קו דק במסגרת כהה (casing), לא
+    מקווקו: קווקו לא נראה טוב כשכל מקטע-TCI הוא PolyLine קצר נפרד (הדפוס
+    "מתאפס" בכל מקטע). אם יש לו tci_list משלו (הוצמד ע"י
+    _snap_tci_to_latlon_path), הקו הפנימי צבוע לפי אותו סרגל TCI; אחרת כחול קבוע.
     """
     m = folium.Map(location=[TA_LAT_PRECISE, TA_LON_PRECISE], zoom_start=14, tiles="CartoDB positron")
 
-    pts = route_result["route_latlon"]
-    if tci_list and len(tci_list) == len(pts) - 1:
-        def _tci_color(tci) -> str:
-            if tci is None:
-                return "#95a5a6"   # אפור — לא ידוע
-            if tci < 4:
-                return "#27ae60"   # ירוק — מוצל
-            if tci < 7:
-                return "#f39c12"   # כתום — ביניים
-            return "#c0392b"       # אדום — שמש
+    _FAST_CASING_COLOR  = "#1a1a2e"   # מסגרת כהה קבועה — לא תלוי-TCI, נראית רציפה
+    _FAST_CASING_WEIGHT = 5
+    _FAST_LINE_WEIGHT   = 2.5
 
+    def _tci_color(tci) -> str:
+        if tci is None:
+            return "#95a5a6"   # אפור — לא ידוע
+        if tci < 4:
+            return "#27ae60"   # ירוק — מוצל
+        if tci < 7:
+            return "#f39c12"   # כתום — ביניים
+        return "#c0392b"       # אדום — שמש
+
+    pts = route_result["route_latlon"]
+    _shaded_has_tci = bool(tci_list and len(tci_list) == len(pts) - 1)
+    if _shaded_has_tci:
         for i, tci in enumerate(tci_list):
             folium.PolyLine(
                 pts[i:i + 2],
@@ -852,8 +986,46 @@ def build_route_map(
                 opacity=0.9,
                 tooltip=f"TCI: {tci:.1f}" if tci is not None else "TCI לא זמין",
             ).add_to(m)
+    else:
+        folium.PolyLine(
+            pts, color=color, weight=5, opacity=0.85,
+            tooltip=f"מסלול: {route_result['distance_m']:.0f} מ' | {route_result['duration_min']:.0f} דקות",
+        ).add_to(m)
 
-        legend_html = """
+    _fast_tci_list = fast_result.get("tci_list") if fast_result else None
+    _fast_has_tci = bool(fast_result and _fast_tci_list
+                          and len(_fast_tci_list) == len(fast_result["route_latlon"]) - 1)
+    if fast_result:
+        _fpts = fast_result["route_latlon"]
+        if _fast_has_tci:
+            for i, tci in enumerate(_fast_tci_list):
+                seg = _fpts[i:i + 2]
+                folium.PolyLine(seg, color=_FAST_CASING_COLOR,
+                                 weight=_FAST_CASING_WEIGHT, opacity=0.55).add_to(m)
+                folium.PolyLine(
+                    seg,
+                    color=_tci_color(tci),
+                    weight=_FAST_LINE_WEIGHT,
+                    opacity=0.95,
+                    tooltip=f"מהיר TCI: {tci:.1f}" if tci is not None else "מהיר: TCI לא זמין",
+                ).add_to(m)
+        else:
+            folium.PolyLine(_fpts, color=_FAST_CASING_COLOR,
+                             weight=_FAST_CASING_WEIGHT, opacity=0.55).add_to(m)
+            folium.PolyLine(
+                _fpts,
+                color="#2980b9",
+                weight=_FAST_LINE_WEIGHT,
+                opacity=0.95,
+                tooltip=f"מהיר: {fast_result['distance_m']:.0f} מ' | {fast_result['duration_min']:.0f} דקות",
+            ).add_to(m)
+
+    if _shaded_has_tci or _fast_has_tci:
+        _fast_legend_line = (
+            'מסלול מהיר (קו דק במסגרת כהה, צבוע לפי TCI)' if _fast_has_tci
+            else 'מסלול מהיר (OSRM)'
+        )
+        legend_html = f"""
         <div style="position:fixed;bottom:30px;left:30px;z-index:9999;background:white;
                     padding:8px 12px;border-radius:8px;border:1px solid #ccc;font-size:13px;
                     line-height:1.8;direction:rtl;">
@@ -864,26 +1036,11 @@ def build_route_map(
                 border-radius:3px;margin-left:5px;"></span>ביניים (TCI 4–7)<br>
           <span style="background:#c0392b;display:inline-block;width:14px;height:14px;
                 border-radius:3px;margin-left:5px;"></span>שמש מלאה (TCI 7–10)<br>
-          <span style="display:inline-block;width:28px;height:0;
-                border-top:3px dashed #2980b9;margin-left:5px;vertical-align:middle;">
-          </span>מסלול מהיר (OSRM)
+          <span style="display:inline-block;width:16px;height:6px;background:#f39c12;
+                border:2px solid {_FAST_CASING_COLOR};border-radius:2px;
+                margin-left:5px;vertical-align:middle;"></span>{_fast_legend_line}
         </div>"""
         m.get_root().html.add_child(folium.Element(legend_html))
-    else:
-        folium.PolyLine(
-            pts, color=color, weight=5, opacity=0.85,
-            tooltip=f"מסלול: {route_result['distance_m']:.0f} מ' | {route_result['duration_min']:.0f} דקות",
-        ).add_to(m)
-
-    if fast_result:
-        folium.PolyLine(
-            fast_result["route_latlon"],
-            color="#2980b9",
-            weight=4,
-            opacity=0.7,
-            dash_array="8 5",
-            tooltip=f"מהיר: {fast_result['distance_m']:.0f} מ' | {fast_result['duration_min']:.0f} דקות",
-        ).add_to(m)
 
     folium.Marker(
         location=origin_latlon,
