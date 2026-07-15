@@ -621,15 +621,17 @@ _nav_G = _load_nav_graph()
 
 
 def _clamped_now() -> tuple:
-    """שעה נוכחית מעוגלת לחצי-שעה הקרובה, בטווח [6,18] (טווח הניווט המוצל).
+    """שעה נוכחית מעוגלת לחצי-השעה הקרובה ביותר (round-half-up: 15 דק' בדיוק
+    מעוגלות למעלה), בטווח [6:00,18:30] (טווח הניווט המוצל).
 
     שעון ישראל במפורש — `datetime.now()` נאיבי מחזיר UTC על Streamlit Cloud (Linux),
     מה שהזיז את ברירת-המחדל 3 שעות אחורה (19:20 בישראל → 16:20 UTC → 16:00)."""
     from zoneinfo import ZoneInfo
     now = datetime.now(ZoneInfo("Asia/Jerusalem"))
-    h = min(max(now.hour, 6), 18)
-    m = 30 if now.minute >= 30 else 0
-    return h, m
+    total = now.hour * 60 + now.minute
+    rounded = ((total + 15) // 30) * 30
+    rounded = max(6 * 60, min(rounded, 18 * 60 + 30))
+    return rounded // 60, rounded % 60
 
 
 def _today_il():
@@ -850,6 +852,20 @@ else:
     _ca = 45.0
     st.caption(f"🕐 {_nh:02d}:{_nm:02d}")
 
+_SHADE_KEY = "nav_shade_pref_label"
+_SHADE_LAST_KEY = "_nav_shade_pref_last_choice"
+
+if _ca <= 0:
+    # לילה — plan_route מתעלם לגמרי מהעדפת-הצל (routing.py: sun_alt<=0 נופל
+    # ל-OSRM לפני שהקוד מגיע ל-shade_factor בכלל), אז לא הגיוני להראות כפתור
+    # מסומן. שומרים את הבחירה הקודמת (אם הייתה אמיתית) כדי לשחזר כשחוזרים ליום.
+    if st.session_state.get(_SHADE_KEY) is not None:
+        st.session_state[_SHADE_LAST_KEY] = st.session_state[_SHADE_KEY]
+    st.session_state[_SHADE_KEY] = None
+elif st.session_state.get(_SHADE_KEY) is None:
+    # חזרנו ליום (או הרצה ראשונה) — משחזרים את הבחירה הקודמת, או "מאוזן" כברירת מחדל
+    st.session_state[_SHADE_KEY] = st.session_state.get(_SHADE_LAST_KEY, "🌤 מאוזן")
+
 _shade_opts = {
     "🚶 מעט צל": 1.0,
     "🌤 מאוזן":   2.0,
@@ -858,12 +874,12 @@ _shade_opts = {
 _shade_label = st.radio(
     "🌿 העדפת מסלול",
     options=list(_shade_opts.keys()),
-    index=1,
+    index=None,                      # מאפשר "בלי בחירה" (לילה)
     horizontal=True,
     key="nav_shade_pref_label",
     help="מעט צל = מוטה לצל הכי פחות; מאוזן = ברירת מחדל; הרבה צל = צל מקסימלי גם במחיר עיקוף ניכר",
 )
-shade_pref = _shade_opts[_shade_label]
+shade_pref = _shade_opts.get(_shade_label, 1.0)   # None בלילה — לא משנה, plan_route מתעלם מזה
 
 if "nav_compare" not in st.session_state:
     st.session_state["nav_compare"] = True
