@@ -16,6 +16,7 @@ import pytest
 
 from src.routing import (
     compute_length_route, compute_shaded_route, plan_route, sun_position,
+    _route_backtrack,
 )
 
 # קואורדינטות הצמתים (lon=x, lat=y) — צמודות כדי שהיוריסטיקת ה-A* תישאר admissible
@@ -363,3 +364,18 @@ def test_meaningful_shade_gain_keeps_detour():
     assert out["mode"] == "shaded"
     assert out.get("fallback") != "shade_gain_negligible"       # העיקוף המוצדק נשמר
     assert round(out["route_result"]["distance_m"]) == 340      # הדרך המוצלת הארוכה
+
+
+# ---------- מדד ה-backtrack (בסיס לתקרת-החלקות ב-_fit_within_cap) ----------
+
+def test_route_backtrack_helper():
+    """מסלול שמתקדם מונוטונית ליעד → 0; מסלול שמתרחק ואז חוזר → אורך ההתרחקות הרציפה."""
+    dest = (32.080, 34.780)
+    # מונוטוני: כל נקודה קרובה יותר ליעד (ממערב-מזרח לאותו קו-אורך)
+    mono = {"route_latlon": [(32.080, 34.770), (32.080, 34.775), (32.080, 34.780)]}
+    assert _route_backtrack(mono, dest) == 0.0
+    # הלוך-חזור: קרוב (471מ') → מתרחק (943מ', +472) → חוזר ליעד (0)
+    back = {"route_latlon": [(32.080, 34.775), (32.080, 34.770), (32.080, 34.780)]}
+    assert _route_backtrack(back, dest) > 400        # ההתרחקות ~472מ' זוהתה
+    # מסלול ריק/נקודתי → 0 (הגנה)
+    assert _route_backtrack({"route_latlon": [(32.08, 34.78)]}, dest) == 0.0

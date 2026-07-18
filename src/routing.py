@@ -148,6 +148,11 @@ HIGH_EXPOSURE_TCI = 5.5
 # "העיקוף חסר-ההיגיון" כשהאזור כבר קריר (למשל ב-10:00 הכל TCI~1-2, אין מה להרוויח).
 # ניתן-לכוונון; 1.0 נקודה על סקאלת 1-10 = שיפור מוחשי מינימלי.
 MIN_TCI_GAIN = 1.0
+# תקרת פיתול-אחורה (backtrack) למסלול המוצל: מסלול שמתרחק מהיעד ביותר מזה בקטע רציף
+# נחשב "מפותל" — לולאת ה-backoff תוריד לו אקספוננט עד שיתחלק. נמדד חי: מסלולים חלקים
+# מגיעים ל-~34מ' לכל היותר, המפותלים ל-56-127מ' — 45 מפריד ביניהם. תלוי-מסלול (חלקים
+# ב-sf=2.0 נשארים 2.0), אז לא מקפח את "הרבה צל" גלובלית. ניתן-לכוונון.
+MAX_BACKTRACK_M = 45.0
 EDGES_FEATURES_PATH = Path("data/edges_features.parquet")
 
 _PREF_CACHE = None
@@ -657,6 +662,27 @@ def _haversine_m(G: nx.MultiDiGraph, u, v) -> float:
     return _haversine_latlon(G.nodes[u]["y"], G.nodes[u]["x"], G.nodes[v]["y"], G.nodes[v]["x"])
 
 
+def _route_backtrack(route_result: dict, dest_latlon: tuple) -> float:
+    """הפיתול-אחורה המקסימלי של מסלול: אורך הקטע-הרציף הארוך ביותר שבו המסלול
+    *מתרחק* מהיעד (במקום להתקרב). 0 = מסלול שמתקדם מונוטונית ליעד. משמש כמדד-חלקות
+    בתקרת ה-backoff — מסלול-צל שמתפתל אחורה מדי (מדד גבוה) יורד לאקספוננט שמחליק אותו."""
+    pts = route_result.get("route_latlon") or []
+    if len(pts) < 2:
+        return 0.0
+    prev = _haversine_latlon(pts[0][0], pts[0][1], dest_latlon[0], dest_latlon[1])
+    worst = 0.0
+    run = 0.0
+    for lat, lon in pts[1:]:
+        cur = _haversine_latlon(lat, lon, dest_latlon[0], dest_latlon[1])
+        if cur > prev + 2.0:            # התרחק >2מ' מהיעד (סף רעש)
+            run += cur - prev
+            worst = max(worst, run)
+        else:
+            run = 0.0
+        prev = cur
+    return worst
+
+
 def compute_shaded_route(
     origin_latlon: tuple,
     dest_latlon: tuple,
@@ -1090,8 +1116,12 @@ def plan_route(
             return _route_memo[d]
 
         def _fits(d):
+            # "נכנס" = גם בתוך תקרת-האורך וגם חלק (backtrack ≤ MAX_BACKTRACK_M). שני
+            # התנאים מונוטוניים ב-shade_factor (אקספוננט↑ → אורך↑ ו-backtrack↑), אז
+            # החיתוך נשאר downward-closed והחיפוש הבינארי תקין.
             rt = _route_at(d)
-            return rt is not None and rt["distance_m"] <= thresh
+            return (rt is not None and rt["distance_m"] <= thresh
+                    and _route_backtrack(rt, dest_latlon) <= MAX_BACKTRACK_M)
 
         # הרמה המלאה כבר נכנסת → אין צורך בחיפוש (המקרה השכיח).
         if _fits(hi_d):

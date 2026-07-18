@@ -970,12 +970,16 @@ if find_btn or _quick_run:
                 # מסלול מהיר להשוואה — בתוך אותו st.status, לפני "המסלול מוכן!", כדי
                 # שזה יראה כרצף טעינה אחד ולא כשתי טעינות נפרדות (הראשונה "מסתיימת"
                 # ומיד אחריה ספינר נוסף).
+                # משתמשים ב-compute_length_route (הקצר-ביותר *על הגרף*, TCI מדויק) ולא ב-OSRM:
+                # זה אותו בסיס שהשער ב-plan_route משווה אליו, כך שני המסלולים בני-השוואה
+                # ומובטח שהמוצל לעולם לא חם/ארוך יותר מהמהיר (אחרת ערבוב גרף↔OSRM ומדידה
+                # מדויקת↔מוצמדת יצר "מוצל" חם מ"מהיר"). OSRM נשאר למצבי-מהיר האמיתיים.
                 if compare_fast and plan["mode"] == "shaded":
                     _status.update(label="מחשב מסלול מהיר להשוואה...")
                     try:
-                        _fast_result = compute_route(
+                        _fast_result = compute_length_route(
                             plan["origin_latlon"], plan["dest_latlon"],
-                            tci_by_uv=plan.get("tci_uv"), G=_nav_G,
+                            plan.get("tci_uv"), G=_nav_G,
                         )
                     except Exception:
                         _fast_compare_error = True
