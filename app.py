@@ -425,10 +425,14 @@ if _ROUTING:
         # מפתח הקאש נשאר address בלבד, זהה להתנהגות הקודמת.
         return geocode_address(address, on_progress=_on_progress)
 
-    def _geocode_llm(address: str) -> tuple:
-        """_geocode_cached עם LLM fallback — אם כל שלושת השלבים נכשלים, מנסה לנרמל דרך Groq."""
+    def _geocode_llm(address: str, _on_progress=None) -> tuple:
+        """_geocode_cached עם LLM fallback — אם כל שלושת השלבים נכשלים, מנסה לנרמל דרך Groq.
+
+        מקבל _on_progress (positional) כדי להיות תואם-חתימה ל-geocode_fn ש-plan_route
+        קורא כ-geocode_fn(addr, on_progress) — כך אותו נתיב-גיאוקוד (כולל ה-LLM fallback)
+        משמש גם את התצוגה-המקדימה וגם את חישוב-המסלול, בלי הבדל שגורם ל'זוהה אבל לא נמצא'."""
         try:
-            return _geocode_cached(address)
+            return _geocode_cached(address, _on_progress)
         except ValueError:
             try:
                 groq_key = st.secrets.get("GROQ_API_KEY", "")
@@ -438,7 +442,7 @@ if _ROUTING:
                 normalized = _normalize_place(address, groq_key)
                 if normalized:
                     try:
-                        return _geocode_cached(normalized)
+                        return _geocode_cached(normalized, _on_progress)
                     except ValueError:
                         pass
             raise
@@ -953,7 +957,7 @@ if find_btn or _quick_run:
                     origin_input, dest_input,
                     use_shaded=_use_shaded,
                     nav_hour=_nav_hour,
-                    geocode_fn=_geocode_cached,
+                    geocode_fn=_geocode_llm,   # אותו נתיב (כולל LLM fallback) כמו התצוגה-המקדימה
                     weather_fn=_get_weather_cached,
                     weights_fn=_precompute_nav_weights,
                     has_model=(_bundle is not None and _edges_df is not None),
