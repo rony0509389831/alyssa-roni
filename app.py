@@ -333,20 +333,17 @@ st.markdown(
 
         /* אייקון-העזרה ("?" ליד תוויות עם help=, כמו בורר העדפת-מסלול ומדדי TCI) —
            לא עוקב אחרי --ink/--data-theme שלנו כברירת מחדל, ובמצב הכהה המותאם
-           של האפליקציה כמעט לא נראה על הרקע הכהה (2026-07-21). צבוע ב-var(--shade)
-           (ירוק המותג — ניגודיות טובה גם בהיר #0E7C66 וגם כהה #35C9A0) ומוגדל מעט
-           כדי שיהיה ברור וקליק-בלי (2026-07-18). */
+           של האפליקציה כמעט לא נראה על הרקע הכהה. צבוע ב-var(--shade) (ירוק המותג —
+           ניגודיות טובה גם בהיר #0E7C66 וגם כהה #35C9A0) לבהירות בשני המצבים.
+           הערה (2026-07-18): רק color/fill — בלי width/height! st.button(help=) עוטף
+           את הכפתור באותו stTooltipIcon, וכפיית width שם כיווצה את הכפתור "הרץ מיד"
+           לרוחב תו-בודד (הטקסט נמרח אנכית). צביעה בלבד לא משפיעה על הפריסה. */
         [data-testid="stTooltipIcon"] {
             color: var(--shade) !important;
             opacity: 1 !important;
-            width: 1.15rem !important;
-            height: 1.15rem !important;
         }
-        [data-testid="stTooltipIcon"] svg,
         [data-testid="stTooltipIcon"] svg path {
             fill: var(--shade) !important;
-            width: 1.15rem !important;
-            height: 1.15rem !important;
         }
 
         /* בורר העדפת מסלול — pill group קופצני */
@@ -903,7 +900,7 @@ elif st.session_state.get(_SHADE_KEY) is None:
 
 _shade_opts = {
     "🚶 מעט צל": 1.0,
-    "🌳 הרבה צל": 3.0,
+    "🌳 הרבה צל": 2.0,
 }
 _shade_label = st.radio(
     "🌿 העדפת מסלול",

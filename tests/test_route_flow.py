@@ -208,7 +208,7 @@ def test_fastest_tier_escalates_to_widest_when_its_own_budget_fails(monkeypatch)
     max_shade = plan_route(
         "A", "B", use_shaded=True, nav_hour=13.0,
         geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
-        weights_fn=_weights_fn, has_model=True, graph=G, shade_factor=3.0,   # "הרבה צל"
+        weights_fn=_weights_fn, has_model=True, graph=G, shade_factor=2.0,   # "הרבה צל" (exponent 2.0)
     )
     fastest = plan_route(
         "A", "B", use_shaded=True, nav_hour=13.0,
@@ -222,7 +222,7 @@ def test_fastest_tier_escalates_to_widest_when_its_own_budget_fails(monkeypatch)
     assert round(max_shade["route_result"]["distance_m"]) == 381
     assert fastest["mode"] == "shaded"                              # לא ויתור! הורחב ל"הרבה צל"
     assert fastest["fallback"] == "tier_escalated"                  # מגולה למשתמש
-    assert fastest["shade_factor_used"] == 3.0
+    assert fastest["shade_factor_used"] == 2.0                      # WIDEST_TIER (הרבה צל) = 2.0
     assert round(fastest["route_result"]["distance_m"]) == 381      # אותו מסלול בדיוק כמו max_shade
 
 
@@ -343,7 +343,7 @@ def test_negligible_shade_gain_returns_direct():
     out = plan_route(
         "A", "B", use_shaded=True, nav_hour=13.0,
         geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
-        weights_fn=_wf, has_model=True, graph=G, shade_factor=3.0,
+        weights_fn=_wf, has_model=True, graph=G, shade_factor=2.0,
     )
     assert out["mode"] == "shaded"
     assert out["fallback"] == "shade_gain_negligible"
@@ -358,7 +358,7 @@ def test_meaningful_shade_gain_keeps_detour():
     out = plan_route(
         "A", "B", use_shaded=True, nav_hour=13.0,
         geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
-        weights_fn=_wf, has_model=True, graph=G, shade_factor=3.0,
+        weights_fn=_wf, has_model=True, graph=G, shade_factor=2.0,
     )
     assert out["mode"] == "shaded"
     assert out.get("fallback") != "shade_gain_negligible"       # העיקוף המוצדק נשמר
