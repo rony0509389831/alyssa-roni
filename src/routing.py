@@ -121,12 +121,20 @@ DETOUR_CAP = 1.6
 # מבין השניים לכל טיול — יחס-אורך זהה (למשל 1.6×) מתורגם לתוספת-זמן שונה
 # לגמרי בהתאם לאורך הטיול (על טיול קצר זה כמה דקות, על טיול ארוך זה עשרות),
 # אז לא מספיק להסתמך על יחס-אורך בלבד כדי שכל הרמות ירגישו עקביות.
+# רק 2 רמות (2026-07-18): "מאוזן" הוסרה — על מסלולים אמיתיים היא כמעט תמיד
+# התכנסה לאותו מסלול כמו "צל" (אין מספיק הבדל אמיתי בין עוצמות-צל סמוכות
+# ברוב הטיולים כדי להצדיק 3 רמות נפרדות).
+# "מעט צל" הורחב (2026-07-18, מאוחר יותר אותו ערב) מ-1.10×/5-דק' ל-1.20×/10-דק' —
+# אומת חי: הרחבת האחוז לבד היא no-op על טיולים מעל ~50 דק' (איבר-הדקות הקבוע
+# עדיין המחמיר), צריך להגדיל את שני האיברים ביחד. על מסלול אמיתי כזה זה פתח
+# shade_factor=0.3 במקום 0.2 (עיקוף ~17% במקום ~10%) וקירר את ה-TCI ב-1.4
+# נקודות — שיפור אמיתי, לא שולי. על מסלולים אחרים (קפיצה חדה בלי "אמצע") זה
+# לא משנה כלום — תלוי-מסלול, לא קבוע אוניברסלי.
 _TIER_DETOUR_CAPS = {
-    1.0: (1.10, 5.0),    # הכי מהר — כמעט בלי סובלנות לעיקוף
-    2.0: (1.30, 15.0),   # מאוזן
-    3.0: (1.60, 30.0),   # צל — יחס נשאר כפי שהיה (1.6×), תקרת-דקות חדשה ונדיבה יותר
+    1.0: (1.20, 10.0),   # מעט צל — הורחב מ-(1.10, 5.0)
+    3.0: (1.60, 30.0),   # הרבה צל — ללא שינוי
 }
-_DEFAULT_DETOUR_CAP = (DETOUR_CAP, 30.0)   # גיבוי אם shade_r לא אחד מ-3 הערכים המוכרים
+_DEFAULT_DETOUR_CAP = (DETOUR_CAP, 30.0)   # גיבוי אם shade_r לא אחד מ-2 הערכים המוכרים
 # סף חשיפה גבוהה לשמש: מקטע עם TCI מעל הסף נחשב "חשיפה גבוהה" (לחישוב תובנות המסלול).
 # 5.5 = מחצית עליונה של סקאלת ה-TCI (1-10). נבחר 5.5 ולא 7 כי בפועל ה-TCI מגיע ל-~6.4
 # לכל היותר בשעות אחה"צ (מגיע מעל 7 רק סביב שיא הצהריים) — סף 7 היה משאיר את המדד 0 ברוב היום.
@@ -222,8 +230,14 @@ def load_graph() -> nx.MultiDiGraph:
     return G
 
 
-def _nominatim_search(query: str) -> tuple | None:
-    """קריאה ישירה ל-Nominatim API עם מיקוד גיאוגרפי לת"א."""
+def _nominatim_search(query: str, house_number: str | None = None) -> tuple | None:
+    """קריאה ישירה ל-Nominatim API עם מיקוד גיאוגרפי לת"א.
+
+    house_number (אופציונלי, תוקן 2026-07-18): כשמספר-בית מבוקש, מוודא ש-
+    Nominatim באמת מצא בניין באותו מספר (`address.house_number` בתשובה) —
+    לא רק את הרחוב. כשמספר הבית לא סביר/לא קיים (למשל "יפת 4900"), Nominatim
+    נופל בשקט לרמת-רחוב (`addresstype="road"`, בלי house_number בכלל) — בלי
+    הבדיקה הזו התוצאה הזו התקבלה כאילו הייתה הכתובת המדויקת."""
     params = {
         "q": query,
         "format": "json",
@@ -233,15 +247,18 @@ def _nominatim_search(query: str) -> tuple | None:
         "viewbox": f"{TA_BBOX[1]},{TA_BBOX[2]},{TA_BBOX[3]},{TA_BBOX[0]}",
         "bounded": 0,
         "accept-language": "he,en",
+        "addressdetails": 1,
     }
     _t0 = time.monotonic()
     resp = _request_with_retry("get", _NOMINATIM_URL, params=params,
                                 headers=_NOMINATIM_HEADERS, timeout=10)
     _log_timing(f"Nominatim '{query}'", time.monotonic() - _t0)
     data = resp.json()
-    if data:
-        return float(data[0]["lat"]), float(data[0]["lon"])
-    return None
+    if not data:
+        return None
+    if house_number is not None and data[0].get("address", {}).get("house_number") != house_number:
+        return None
+    return float(data[0]["lat"]), float(data[0]["lon"])
 
 
 def _overpass_search(name: str) -> tuple | None:
@@ -274,15 +291,20 @@ def _overpass_search(name: str) -> tuple | None:
     return None
 
 
-def _photon_search(query: str) -> tuple | None:
-    """Photon geocoder (komoot, OSM-based, fuzzy) — fallback שלישי לשמות מקומות לא מדויקים."""
+def _photon_search(query: str, house_number: str | None = None) -> tuple | None:
+    """Photon geocoder (komoot, OSM-based, fuzzy) — fallback שלישי לשמות מקומות לא מדויקים.
+
+    בלי פרמטר "lang" (הוסר 2026-07-18): Photon תומך רק ב-default/de/en/fr, לא
+    "he" — כשהוא נשלח, ה-API דחה כל בקשה בשקט (נבלע ע"י ה-try/except למטה),
+    כך שכל השלב הזה מעולם לא עבד בפועל. house_number (אופציונלי): כמו ב-
+    Nominatim, מוודא שהתוצאה היא באמת מספר-הבית המבוקש ולא רק התאמה מטושטשת
+    לרחוב (Photon סובל שגיאות-כתיב, אבל לא אמור "לנחש" מספר-בית שלא התבקש)."""
     params = {
         "q": query,
         "limit": 5,
         "lat": TA_LAT_PRECISE,
         "lon": TA_LON_PRECISE,
         "zoom": 14,
-        "lang": "he",
     }
     try:
         _t0 = time.monotonic()
@@ -290,6 +312,9 @@ def _photon_search(query: str) -> tuple | None:
                                     headers=_NOMINATIM_HEADERS, timeout=6)
         _log_timing(f"Photon '{query}'", time.monotonic() - _t0)
         for feat in resp.json().get("features", []):
+            props = feat.get("properties", {})
+            if house_number is not None and props.get("housenumber") != house_number:
+                continue
             coords = feat["geometry"]["coordinates"]
             lon, lat = float(coords[0]), float(coords[1])
             if TA_BBOX[0] <= lat <= TA_BBOX[2] and TA_BBOX[1] <= lon <= TA_BBOX[3]:
@@ -389,9 +414,15 @@ def geocode_address(address: str, on_progress=None) -> tuple:
 
     שלב 0 — תיקון שגיאת-כתיב בשם רחוב (כשיש מספר בית) מול מילון שמות ה-OSM, כדי
     ש-"דיזינגוף 55" (י' מיותרת) לא יחזיר כתובת שגויה מ-Nominatim.
+
+    ולידציית מספר-בית (2026-07-18): כשיש מספר בית בכתובת, תוצאה מ-Nominatim/
+    Photon שלא כוללת בדיוק את אותו מספר-בית (למשל נפילה לרמת-רחוב כי המספר
+    לא סביר — "יפת 4900") נדחית, לא מתקבלת כאילו הייתה התאמה מדויקת.
     """
     address = _correct_street_spelling(address)
     lower = address.lower()
+    _house_num_match = re.search(r"\d+", address)
+    house_number = _house_num_match.group() if _house_num_match else None
     queries = []
     if "tel" not in lower:
         queries.append(f"{address}, תל אביב")
@@ -402,7 +433,7 @@ def geocode_address(address: str, on_progress=None) -> tuple:
         on_progress(f"מחפש את '{address}'... ({random.choice(_DID_YOU_KNOW)})")
     for q in queries:
         try:
-            point = _nominatim_search(q)
+            point = _nominatim_search(q, house_number=house_number)
         except Exception:
             continue
         if point is None:
@@ -412,7 +443,7 @@ def geocode_address(address: str, on_progress=None) -> tuple:
             return lat, lon
 
     # Nominatim לא מצא — ננסה Overpass לשמות POI (כתובת ללא ספרות = שם מקום)
-    if not re.search(r"\d", address):
+    if house_number is None:
         if on_progress:
             on_progress(f"לא נמצא ב-Nominatim — מנסה Overpass עבור '{address}'...")
         _bare = address.strip().split(",")[0].strip()
@@ -427,7 +458,7 @@ def geocode_address(address: str, on_progress=None) -> tuple:
     if on_progress:
         on_progress(f"מנסה חיפוש מקורב (Photon) עבור '{address}'...")
     for _pq in dict.fromkeys([address, f"{address} תל אביב"]):
-        _ph = _photon_search(_pq)
+        _ph = _photon_search(_pq, house_number=house_number)
         if _ph is not None:
             return _ph
 
@@ -610,6 +641,18 @@ def compute_shaded_route(
     return _summarize_path(G, path, tci_by_uv)
 
 
+def _weighted_avg_tci(tci_valid: list, seg_lens: list):
+    """ממוצע TCI משוקלל לפי אורך המקטע בפועל (מטרים) — לא לפי מספר מקטעים, כדי
+    שמקטע ארוך (למשל שדרה) ישפיע על הממוצע יותר ממקטע קצר (למשל סמטה), בהתאם
+    לכמה מהמסלול בפועל עובר בו. נופל לממוצע רגיל אם המשקל הכולל 0 (לא צפוי
+    במציאות — כל המקטעים אורכם חיובי — אבל מגן מפני חלוקה באפס)."""
+    if not tci_valid:
+        return None
+    if sum(seg_lens) <= 0:
+        return float(np.mean(tci_valid))
+    return float(np.average(tci_valid, weights=seg_lens))
+
+
 def _summarize_path(G: nx.MultiDiGraph, path: list, tci_by_uv: dict) -> dict:
     """מסכם מסלול (רשימת צמתים) למדדים: מרחק, זמן, TCI פר-מקטע, ממוצע TCI, ומטרי חשיפה גבוהה.
 
@@ -621,7 +664,8 @@ def _summarize_path(G: nx.MultiDiGraph, path: list, tci_by_uv: dict) -> dict:
     total_dist    = 0.0
     high_exp_m    = 0.0
     tci_full      = []   # N-1 ערכים, None כשאין TCI לקשת
-    tci_valid     = []   # לחישוב avg_tci
+    tci_valid     = []   # לחישוב avg_tci (משוקלל-אורך)
+    tci_valid_len = []   # אורך המקטע המקביל לכל ערך ב-tci_valid
     for i in range(len(path) - 1):
         u, v = path[i], path[i + 1]
         seg_len = 0.0
@@ -634,6 +678,7 @@ def _summarize_path(G: nx.MultiDiGraph, path: list, tci_by_uv: dict) -> dict:
             val = float(tci_val)
             tci_full.append(val)
             tci_valid.append(val)
+            tci_valid_len.append(seg_len)
             if val > HIGH_EXPOSURE_TCI:
                 high_exp_m += seg_len
         else:
@@ -643,7 +688,7 @@ def _summarize_path(G: nx.MultiDiGraph, path: list, tci_by_uv: dict) -> dict:
         "route_latlon":    route_latlon,
         "distance_m":      total_dist,
         "duration_min":    total_dist / WALK_SPEED_MPM,
-        "avg_tci":         float(np.mean(tci_valid)) if tci_valid else None,
+        "avg_tci":         _weighted_avg_tci(tci_valid, tci_valid_len),
         "tci_list":        tci_full,   # תמיד אורך N-1
         "high_exposure_m": high_exp_m,
     }
@@ -689,7 +734,7 @@ def _snap_tci_to_latlon_path(route_latlon: list, tci_by_uv: dict,
     mid_lons = [(route_latlon[i][1] + route_latlon[i + 1][1]) / 2
                 for i in range(len(route_latlon) - 1)]
     edges = ox.distance.nearest_edges(G, X=mid_lons, Y=mid_lats)
-    tci_list, tci_valid = [], []
+    tci_list, tci_valid, tci_valid_len = [], [], []
     high_exp_m = 0.0
     for i, (u, v, _k) in enumerate(edges):
         seg_len = _haversine_latlon(*route_latlon[i], *route_latlon[i + 1])
@@ -701,12 +746,13 @@ def _snap_tci_to_latlon_path(route_latlon: list, tci_by_uv: dict,
             val = float(tci_val)
             tci_list.append(val)
             tci_valid.append(val)
+            tci_valid_len.append(seg_len)
             if val > HIGH_EXPOSURE_TCI:
                 high_exp_m += seg_len
         else:
             tci_list.append(None)
     return {
-        "avg_tci":         float(np.mean(tci_valid)) if tci_valid else None,
+        "avg_tci":         _weighted_avg_tci(tci_valid, tci_valid_len),
         "tci_list":        tci_list,
         "high_exposure_m": high_exp_m,
     }
@@ -845,7 +891,12 @@ def plan_route(
       route_result — תוצאת המסלול (route_latlon, distance_m, duration_min, avg_tci?)
       color        — צבע לציור (ירוק=מוצל, כחול=מהיר)
       mode         — "shaded" / "fast" בפועל (אחרי fallbacks)
-      fallback     — None / "model_missing" / "weights_missing" (סיבת נפילה למהיר)
+      fallback     — None (הצלחה מלאה) / "model_missing" / "weights_missing" /
+                     "night" / "overcast" (נפילה למהיר, סיבות זמינות) /
+                     "tier_escalated" (mode="shaded" — הורחב ל"הרבה צל" כדי למצוא מסלול) /
+                     "best_effort_over_budget" (mode="shaded" — חורג מהתקציב הרגיל,
+                     אך קריר מהמהיר בפועל) /
+                     "detour_cap_unreachable" (mode="fast" — אין שום מסלול-צל קריר מהמהיר)
     """
     # on_progress מועבר positional (לא keyword) כדי שיתאים גם ל-geocode_fn
     # מוזרק שהפרמטר הפנימי שלו נקרא אחרת (למשל _on_progress, לצורך cache-key
@@ -912,35 +963,116 @@ def plan_route(
         origin_latlon, dest_latlon, wdict, tci_uv, G=graph)
 
     # תקרת עיקוף פר-רמה: אם המסלול המוצל ארוך מהתקרה האפקטיבית של הרמה שנבחרה
-    # (המחמיר מבין תקרת-האחוזים ותקרת-הדקות שלה, ר' _TIER_DETOUR_CAPS), מורידים
-    # את shade_factor בהדרגה (פחות משקל לצל → פחות עיקוף) עד שעומד בתקרה או
-    # שהגענו ל-0.0 (מסלול קצר-ביותר טהור — רצפה אמיתית, לא 1.0: כך שגם "הכי
-    # מהר" מקבל הגנה, לא רק "מאוזן"/"צל"). ה-weights_fn ממוטמן ב-app, אז
-    # הקריאות החוזרות זולות ברוב המקרים.
-    ratio_cap, time_cap_min = _TIER_DETOUR_CAPS.get(shade_r, _DEFAULT_DETOUR_CAP)
-    factor = shade_r
+    # (המחמיר מבין תקרת-האחוזים ותקרת-הדקות שלה, ר' _TIER_DETOUR_CAPS), מחפשים
+    # את ה-shade_factor הגבוה ביותר (הכי קרוב להעדפה המקורית) שעדיין עומד בתקרה,
+    # ע"י ירידה בצעדים עדינים של 0.1 (לא 0.5!) עד רצפה של 0.1 — לא 0.0 ולא 1.0.
+    #
+    # למה 0.1 ולא 0.5 (תוקן 2026-07-18): בבדיקה אמפירית על מסלולים אמיתיים
+    # התברר שהיחס בין shade_factor למרחק/TCI לא ליניארי ולא חלק — לפעמים יש
+    # "נקודת מתיקה" זולה (למשל 0.3: רק 7.5% עיקוף אך כבר קריר מהמסלול המהיר),
+    # אבל צעד של 0.5 (1.0→0.5→0.0) קופץ *מעליה* לגמרי, ישר מ"אגרסיבי מדי" ל
+    # "עיוור-ל-TCI לחלוטין". צעד של 0.1 (עד 10 ניסיונות) מוצא נקודות-מתיקה כאלה
+    # כשהן קיימות, בלי לוותר לגמרי על שיקול-TCI.
+    #
+    # למה רצפה 0.1 ולא 0.0: ב-shade_factor=0.0 המשקל הופך ל-tci^0=1 קבוע לכל
+    # קשת — עיוור לגמרי לחום האמיתי, רק מרחק מוזל לפי רחוב-ירוק/מדרכה. זה מה
+    # שיצר מסלולי "צל" קצרים יותר אך חמים יותר מהמסלול המהיר. גם ב-0.1 יש עדיין
+    # שיקול-TCI אמיתי (חלש, אך לא אפס).
+    #
+    # מדרג נפילה (2026-07-18, ערב): תקרת-הדקות הקבועה (+5/+30 דק') מתכווצת
+    # יחסית ככל שהטיול ארוך יותר (מעל ~50 דק' היא הופכת למגבילה מהיחס%) —
+    # אז רמה שנבחרה יכולה להיכשל בתקציב שלה גם כשעדיין יש צל ממשי זמין ברמה
+    # הרחבה יותר. במקום לוותר על צל לגמרי בפעם הראשונה שהרמה הנבחרת נכשלת:
+    #   1. מנסים את הרמה שנבחרה (כרגיל).
+    #   2. אם נכשלה וזו לא כבר "הרבה צל" — מנסים את "הרבה צל" (התקרה הרחבה
+    #      ביותר שיש) לפני שמוותרים. הצלחה כאן → "tier_escalated" (מגולה למשתמש).
+    #   3. אם גם הרמה הרחבה ביותר נכשלה — בודקים אם הניסיון הכי טוב שנמצא
+    #      (מכל אחת מ-2 הרמות) בכל זאת קריר מהמסלול המהיר. אם כן → מציגים אותו
+    #      כ"best_effort_over_budget" (חורג מהתקציב הרגיל, אבל אמיתי ומועיל).
+    #      רק אם אף ניסיון לא קריר מהמהיר → נופלים בכנות למסלול מהיר רגיל
+    #      (fallback="detour_cap_unreachable") — לעולם לא מסלול "מוצל" שקרי.
     base_dist = shortest_walk_distance(origin_latlon, dest_latlon, G=graph)
-    capped = False
-    if weights_fn is not None and base_dist not in (0.0, float("inf")):
-        base_time_min = base_dist / WALK_SPEED_MPM
-        effective_cap = (min(ratio_cap, 1 + (time_cap_min / base_time_min))
-                          if base_time_min > 0 else ratio_cap)
-        while route["distance_m"] > effective_cap * base_dist and factor > 0.0:
-            factor = max(0.0, round((factor - 0.5) * 2) / 2)
-            _w, _t = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, factor)
+    if base_dist in (0.0, float("inf")):
+        result["route_result"] = route
+        result["color"] = "#27ae60"
+        result["mode"] = "shaded"
+        result["shade_factor_used"] = shade_r
+        result["capped"] = False
+        result["tci_uv"] = tci_uv
+        return result
+
+    base_time_min = base_dist / WALK_SPEED_MPM
+
+    def _fit_within_cap(shade_start, start_route=None):
+        """מריץ backoff (צעדי 0.1, רצפה 0.1) עבור רמת-צל אחת כנגד התקרה
+        האפקטיבית שלה. מחזיר (route, factor_used, fits_within_cap)."""
+        ratio_cap, time_cap_min = _TIER_DETOUR_CAPS.get(shade_start, _DEFAULT_DETOUR_CAP)
+        eff_cap = (min(ratio_cap, 1 + (time_cap_min / base_time_min))
+                   if base_time_min > 0 else ratio_cap)
+        fac = shade_start
+        if start_route is not None:
+            rt = start_route
+        else:
+            _w, _t = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, fac)
+            rt = compute_shaded_route(origin_latlon, dest_latlon, _w, _t, G=graph)
+        floor = 0.1
+        while rt["distance_m"] > eff_cap * base_dist and fac > floor:
+            fac = max(floor, round((fac - 0.1) * 10) / 10)
+            _w, _t = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, fac)
             if _w is None:
                 break
-            route = compute_shaded_route(origin_latlon, dest_latlon, _w, _t, G=graph)
-            capped = True
+            rt = compute_shaded_route(origin_latlon, dest_latlon, _w, _t, G=graph)
+        return rt, fac, (rt["distance_m"] <= eff_cap * base_dist)
 
-    result["route_result"] = route
-    result["color"] = "#27ae60"
-    result["mode"] = "shaded"
-    result["shade_factor_used"] = factor
-    result["capped"] = capped
-    # tci_uv אינו תלוי ב-shade_factor (הוא תחזיות המודל; רק המשקל תלוי) — מוחזר כדי
-    # ש-app יוכל לבנות metrics_fn שמריץ מסלול-בסיס ותובנות על דרישה (ר' recommend_route_insight).
-    result["tci_uv"] = tci_uv
+    route1, factor1, fits1 = _fit_within_cap(shade_r, start_route=route)
+    if fits1:
+        result["route_result"] = route1
+        result["color"] = "#27ae60"
+        result["mode"] = "shaded"
+        result["shade_factor_used"] = factor1
+        result["capped"] = (factor1 != shade_r)
+        result["tci_uv"] = tci_uv
+        return result
+
+    WIDEST_TIER = 3.0
+    best_route, best_factor = route1, factor1
+    if shade_r < WIDEST_TIER:
+        if on_progress:
+            on_progress("מרחיב את תקציב העיקוף לרמת 'הרבה צל'...")
+        route2, factor2, fits2 = _fit_within_cap(WIDEST_TIER)
+        if fits2:
+            result["route_result"] = route2
+            result["color"] = "#27ae60"
+            result["mode"] = "shaded"
+            result["shade_factor_used"] = factor2
+            result["capped"] = True
+            result["fallback"] = "tier_escalated"
+            result["tci_uv"] = tci_uv
+            return result
+        if (route2.get("avg_tci") is not None and
+                (best_route.get("avg_tci") is None or route2["avg_tci"] < best_route["avg_tci"])):
+            best_route, best_factor = route2, factor2
+
+    if on_progress:
+        on_progress("בודק אם יש בכל זאת מסלול קריר יותר מהמהיר...")
+    fast_route = compute_route(origin_latlon, dest_latlon, tci_by_uv=tci_uv, G=graph)
+    if (best_route.get("avg_tci") is not None and fast_route.get("avg_tci") is not None
+            and best_route["avg_tci"] < fast_route["avg_tci"]):
+        result["route_result"] = best_route
+        result["color"] = "#27ae60"
+        result["mode"] = "shaded"
+        result["shade_factor_used"] = best_factor
+        result["capped"] = True
+        result["fallback"] = "best_effort_over_budget"
+        result["tci_uv"] = tci_uv
+        return result
+
+    if on_progress:
+        on_progress("לא נמצא מסלול מוצל קריר יותר מהמהיר — עובר למסלול מהיר...")
+    result["route_result"] = fast_route
+    result["fallback"] = "detour_cap_unreachable"
+    result["shade_factor_used"] = best_factor
+    result["capped"] = True
     return result
 
 

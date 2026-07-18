@@ -67,9 +67,7 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         "recommendation='night'\n"
         "- temp > 32 AND cloud_cover < 25 AND sun_altitude > 25: shade_level='max', "
         "recommendation='hot'\n"
-        "- temp > 27 AND cloud_cover < 50: shade_level='balanced', "
-        "recommendation='warm'\n"
-        "- otherwise: shade_level=null, recommendation=null (mild or no data)\n"
+        "- otherwise: shade_level=null, recommendation=null (mild/warm or no data)\n"
         "If user DID explicitly state a shade preference → respect it exactly, set recommendation=null.\n"
     ) if context_str else ""
     return (
@@ -104,8 +102,9 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         '  "shade_level"    - intensity of shade preference. One of:\n'
         '    "short"    = fastest/shortest, minimal shade weighting (user says "הכי מהיר", "קצר", '
         '"fast", "short", or is indifferent to shade like "לא אכפת לי מהצל").\n'
-        '    "balanced" = general/unqualified shade preference ("מוצל", "בצל", "ירוק", "cool", "green route", "shaded").\n'
-        '    "max"      = maximum shade even at cost of detours ("הכי מוצל", "צל מקסימלי", "max shade").\n'
+        '    "max"      = wants shade at all, qualified or not ("מוצל", "בצל", "ירוק", "cool", "green route", '
+        '"shaded", "הכי מוצל", "צל מקסימלי", "max shade" — any shade request maps here, there is no separate '
+        '"balanced" level).\n'
         '    null       = let conditions decide (see rules below), or no preference data.\n'
         '  "recommendation" - ONE of these exact lowercase codes when you auto-choose a shade_level '
         'from the conditions: "night", "hot", "warm". Use null if the user was explicit about shade '
@@ -172,15 +171,15 @@ def _coerce_mode(value):
     return "shaded"
 
 
-_SHADE_LEVELS = frozenset({"short", "balanced", "max"})
+_SHADE_LEVELS = frozenset({"short", "max"})
 
 
 def _coerce_shade_level(value):
-    """None אם לא צוין; אחד מ-short/balanced/max אם צוין.
+    """None אם לא צוין; אחד מ-short/max אם צוין.
 
-    בקשה כללית לצל (מוצל/ירוק/צל, בלי מילת-עוצמה) → balanced; רק מילים
-    מפורשות של מקסימום ("מקסימלי"/"max") ממופות ל-max — כך נשמר הניואנס
-    בין "אני רוצה מסלול מוצל" לבין "אני רוצה את הצל המקסימלי" גם בלי רמה רביעית.
+    רק 2 רמות (2026-07-18, "מאוזן" הוסרה — לא הצדיקה רמה נפרדת בפועל):
+    כל בקשת-צל, מפורשת או כללית (מוצל/ירוק/צל/מקסימלי), ממופה ל-max;
+    רק מילות-מהירות/אדישות-לצל ממופות ל-short.
     """
     if value is None:
         return None
@@ -189,10 +188,9 @@ def _coerce_shade_level(value):
         return s
     if any(h in s for h in ("short", "fast", "quick", "מהיר", "קצר")):
         return "short"
-    if any(h in s for h in ("max", "maximum", "מקסימלי", "הכי מוצל")):
+    if any(h in s for h in ("max", "maximum", "מקסימלי", "הכי מוצל",
+                            "shaded", "shade", "cool", "מוצל", "ירוק", "צל")):
         return "max"
-    if any(h in s for h in ("shaded", "shade", "cool", "מוצל", "ירוק", "צל")):
-        return "balanced"
     return None
 
 

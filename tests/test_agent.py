@@ -50,7 +50,7 @@ def test_night_hour_overrides_explicit_shade_preference():
 
     # בלי שעה מפורשת אבל השמש מתחת לאופק (sun_altitude<=0) — גם כן מהיר
     out3 = _validate({"origin": "רוטשילד", "destination": "שוק הכרמל",
-                      "mode": "shaded", "shade_level": "balanced"},
+                      "mode": "shaded", "shade_level": "max"},
                      today_str=_TODAY, sun_altitude=-3.0)
     assert out3["mode"] == "fast" and out3["shade_level"] == "short"
 
@@ -87,12 +87,12 @@ def test_mode_normalization_defaults_to_shaded():
 
 
 def test_shade_level_coercion():
+    """רק 2 רמות (2026-07-18): כל בקשת-צל, מפורשת או כללית, ממופה ל-max."""
     assert _coerce_shade_level("short") == "short"
-    assert _coerce_shade_level("balanced") == "balanced"
-    assert _coerce_shade_level("shaded") == "balanced"
+    assert _coerce_shade_level("shaded") == "max"
     assert _coerce_shade_level("max") == "max"
     assert _coerce_shade_level("הכי מהיר") == "short"
-    assert _coerce_shade_level("מוצל") == "balanced"
+    assert _coerce_shade_level("מוצל") == "max"
     assert _coerce_shade_level("מקסימלי") == "max"
     assert _coerce_shade_level(None) is None
     assert _coerce_shade_level("גיבוב") is None    # לא ברור → לא לשנות

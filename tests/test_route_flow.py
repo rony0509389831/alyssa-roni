@@ -140,7 +140,7 @@ def test_plan_route_night_falls_back_to_fast(monkeypatch):
     assert out["fallback"] == "night"                            # סיבת-הנפילה = לילה
 
 
-# ---------- תקרת-עיקוף פר-רמה: "הכי מהר" סוף-סוף מקבל הגנה (רצפה 0.0, לא 1.0) ----------
+# ---------- תקרת-עיקוף פר-רמה: חיפוש עדין (צעד 0.1, רצפה 0.1) + נפילה כשאין מסלול בתקציב ----------
 
 def _stub_weights_fn_factory(tci_by_uv):
     """weights_fn מדומה: משקל = אורך × TCI^shade_factor לכל קשת (כמו compute_tci_weights
@@ -152,12 +152,13 @@ def _stub_weights_fn_factory(tci_by_uv):
     return _fn
 
 
-def test_fastest_tier_gets_capped_to_shortest_when_detour_too_extreme():
-    """לפני התיקון: 'הכי מהר' (shade_factor=1.0) התחיל כבר ברצפת-הלולאה הישנה (1.0),
-    אז לולאת ההתפשרות מעולם לא רצה לו — היה יכול לצאת בכל אורך בלי שום הגנה.
-    עכשיו הרצפה היא 0.0: אם המסלול-המשוקלל (600מ') ארוך פי 2 מהקצר-ביותר (300מ',
-    הרבה מעל תקרת 1.10×/5-דק' של 'הכי מהר') — הלולאה ממשיכה לרדת עד שהיא
-    מתכנסת בפועל למסלול הקצר ביותר עצמו (shade_factor_used=0.0)."""
+def test_fastest_tier_finds_cheap_middle_ground_when_one_exists():
+    """גרף זה (קצר=300מ'/TCI=8, ארוך=600מ'/TCI=1) יש בו "נקודת-מתיקה" זולה:
+    ב-shade_factor=1/3≈0.333 בדיוק שני המסלולים שווים במשקל; מתחתיה הקצר זול
+    יותר. חיפוש עדין בצעדי 0.1 (לא 0.5!) יורד 1.0→0.9→...→0.3 ומגלה ש-0.3 כבר
+    proceeds למסלול הקצר (300מ', בתוך תקרת 1.10× של 'הכי מהר' = 330מ') — בלי
+    לרדת עד רצפה עיוורת-ל-TCI. זה בדיוק התיקון על-פני צעד-0.5 הישן, שהיה מדלג
+    מעל הנקודה הזו וממשיך היישר לרצפה."""
     G = _mini_two_route_graph()
     tci_map = {**{e: 8.0 for e in _SHORT_EDGES}, **{e: 1.0 for e in _LONG_EDGES}}
 
@@ -168,43 +169,125 @@ def test_fastest_tier_gets_capped_to_shortest_when_detour_too_extreme():
         has_model=True, graph=G, shade_factor=1.0,   # "הכי מהר"
     )
 
-    assert out["mode"] == "shaded"
+    assert out["mode"] == "shaded"                            # מסלול-צל אמיתי, לא נפילה
     assert out["capped"] is True                              # ההתפשרות אכן הופעלה
-    assert out["shade_factor_used"] == 0.0                    # ירד עד הרצפה החדשה
-    assert round(out["route_result"]["distance_m"]) == 300    # התכנס למסלול הקצר-ביותר בפועל
+    assert out["shade_factor_used"] == 0.3                    # נמצאה נקודת-המתיקה, לא 0.0/1.0
+    assert round(out["route_result"]["distance_m"]) == 300    # בתוך תקרת 1.10×
 
 
-def test_balanced_tier_accepts_moderate_detour_but_fastest_does_not():
-    """אותו תרחיש-עיקוף מתון בדיוק (1.2× — 360מ' לעומת בסיס 300מ') מתקבל בשקט
-    ע"י 'מאוזן' (תקרתו 1.30×, אין צורך בהתפשרות כלל), אבל נדחה ע"י 'הכי מהר'
-    (תקרתו המחמירה 1.10× — מכריחה התפשרות עד המסלול הקצר-ביותר). מוכיח שלכל
-    רמה יש בפועל סף שונה, לא תקרה גלובלית משותפת אחת."""
+def test_fastest_tier_escalates_to_widest_when_its_own_budget_fails(monkeypatch):
+    """הדרך הארוכה-המוצלת (381מ' לעומת בסיס 300מ' — כ-1.27×) חורגת מהתקציב
+    הצר של "מעט צל" (2026-07-18: 1.20×/+10-דק', סף=360מ') גם ברצפה (0.1) —
+    ה-TCI הגבוה מספיק (20.0) בקצרה-החשופה כדי שהארוכה תישאר מועדפת בכל
+    shade_factor שנבדק, אז אין שום נקודת-מתיקה זולה בתוך 360מ'. "הרבה צל"
+    לעומת זאת (תקרתו 1.60×=480מ') מקבל אותה בשקט, בלי צורך בהתפשרות כלל.
+    התוצאה: במקום לוותר על צל לגמרי, plan_route מנסה אוטומטית את "הרבה צל"
+    (התקרה הרחבה ביותר) לפני שהוא נכנע — וזו כן עומדת בתקציב שלה, אז
+    "מעט צל" מקבל בפועל בדיוק את אותו מסלול כמו "הרבה צל", עם
+    fallback='tier_escalated' (מגולה למשתמש), לא נפילה שקטה למסלול מהיר וחשוף."""
+    import src.routing as routing
+    monkeypatch.setattr(
+        routing, "compute_route",
+        lambda o, d, tci_by_uv=None, G=None: {
+            "route_latlon": [o, d], "distance_m": 300.0, "duration_min": 3.75,
+        },
+    )
     G = nx.MultiDiGraph()
     G.graph["crs"] = "EPSG:4326"
     for n, (x, y) in _XY.items():
         G.add_node(n, x=x, y=y)
-    _gentle_len = {(1, 2): 150.0, (2, 3): 150.0, (1, 4): 120.0, (4, 5): 120.0, (5, 3): 120.0}
+    _gentle_len = {(1, 2): 150.0, (2, 3): 150.0, (1, 4): 127.0, (4, 5): 127.0, (5, 3): 127.0}
     for u, v in _SHORT_EDGES + _LONG_EDGES:
         G.add_edge(u, v, key=0, length=_gentle_len[(u, v)])
-    tci_map = {**{e: 8.0 for e in _SHORT_EDGES}, **{e: 1.0 for e in _LONG_EDGES}}
+    tci_map = {**{e: 20.0 for e in _SHORT_EDGES}, **{e: 1.0 for e in _LONG_EDGES}}
 
     def _weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, shade_factor):
         wdict = {e: _gentle_len[e] * (tci_map[e] ** shade_factor) for e in tci_map}
         return wdict, tci_map
 
-    balanced = plan_route(
+    max_shade = plan_route(
         "A", "B", use_shaded=True, nav_hour=13.0,
         geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
-        weights_fn=_weights_fn, has_model=True, graph=G, shade_factor=2.0,   # "מאוזן"
+        weights_fn=_weights_fn, has_model=True, graph=G, shade_factor=3.0,   # "הרבה צל"
     )
     fastest = plan_route(
         "A", "B", use_shaded=True, nav_hour=13.0,
         geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
-        weights_fn=_weights_fn, has_model=True, graph=G, shade_factor=1.0,   # "הכי מהר"
+        weights_fn=_weights_fn, has_model=True, graph=G, shade_factor=1.0,   # "מעט צל"
     )
 
-    assert balanced["capped"] is False                             # 1.2× כבר בתוך תקרת 1.30× — אין ריכוך
-    assert round(balanced["route_result"]["distance_m"]) == 360
-    assert fastest["capped"] is True                               # אותו 1.2× חורג מתקרת 1.10× של "הכי מהר"
-    assert fastest["shade_factor_used"] == 0.0
-    assert round(fastest["route_result"]["distance_m"]) == 300
+    assert max_shade["mode"] == "shaded"
+    assert max_shade["capped"] is False                            # 1.27× כבר בתוך תקרת 1.60× — אין ריכוך
+    assert max_shade["fallback"] is None                            # הצלחה טבעית, לא מדורגת
+    assert round(max_shade["route_result"]["distance_m"]) == 381
+    assert fastest["mode"] == "shaded"                              # לא ויתור! הורחב ל"הרבה צל"
+    assert fastest["fallback"] == "tier_escalated"                  # מגולה למשתמש
+    assert fastest["shade_factor_used"] == 3.0
+    assert round(fastest["route_result"]["distance_m"]) == 381      # אותו מסלול בדיוק כמו max_shade
+
+
+def test_neither_tier_fits_but_best_effort_beats_fast(monkeypatch):
+    """הדרך הארוכה-הקרירה ביותר (600מ', TCI=1.0) נשארת מועדפת בכל shade_factor
+    שנבדק (גם ברצפה 0.1) בזכות פער-TCI קיצוני מול הקצרה (2000.0) — אז היא
+    חורגת מהתקציב גם של 'הכי מהר' (1.10×=330מ') וגם של 'הרבה צל' (1.60×=480מ').
+    בכל זאת היא קרירה משמעותית מהמסלול המהיר (avg_tci=1.0 מול 8.0 המדומה) —
+    אז plan_route מציג אותה כ"מוצל" עם fallback='best_effort_over_budget'
+    (חורג מהתקציב הרגיל, מגולה בבירור), במקום לזרוק את כל החיפוש ולהראות
+    מסלול מהיר-וחם בלי שום הסבר."""
+    import src.routing as routing
+    monkeypatch.setattr(
+        routing, "compute_route",
+        lambda o, d, tci_by_uv=None, G=None: {
+            "route_latlon": [o, d], "distance_m": 300.0, "duration_min": 3.75,
+            "avg_tci": 8.0, "tci_list": [8.0], "high_exposure_m": 300.0,
+        },
+    )
+    G = _mini_two_route_graph()
+    tci_map = {**{e: 2000.0 for e in _SHORT_EDGES}, **{e: 1.0 for e in _LONG_EDGES}}
+
+    def _weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, shade_factor):
+        wdict = {e: _LEN[e] * (tci_map[e] ** shade_factor) for e in tci_map}
+        return wdict, tci_map
+
+    out = plan_route(
+        "A", "B", use_shaded=True, nav_hour=13.0,
+        geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
+        weights_fn=_weights_fn, has_model=True, graph=G, shade_factor=1.0,
+    )
+
+    assert out["mode"] == "shaded"
+    assert out["fallback"] == "best_effort_over_budget"
+    assert round(out["route_result"]["distance_m"]) == 600      # הדרך הארוכה-הקרירה, גם שחורגת
+    assert out["route_result"]["avg_tci"] == 1.0                 # קרירה באמת — לא "מוצל" שקרי
+    assert out["capped"] is True
+
+
+def test_neither_tier_fits_and_best_effort_not_cooler_falls_back_to_fast(monkeypatch):
+    """כמו למעלה, אבל הפעם המסלול המהיר (המדומה) קריר אפילו יותר מהניסיון
+    הכי טוב שנמצא (avg_tci=0.5 מול 1.0) — אין שום תועלת אמיתית בהצגת מסלול
+    "מוצל" שחורג מהתקציב. נופלים בכנות למסלול מהיר (fallback='detour_cap_unreachable'),
+    בדיוק כמו לפני התיקון — הנפילה הכנה עדיין קיימת, רק אחרי שני ניסיונות ולא אחד."""
+    import src.routing as routing
+    monkeypatch.setattr(
+        routing, "compute_route",
+        lambda o, d, tci_by_uv=None, G=None: {
+            "route_latlon": [o, d], "distance_m": 300.0, "duration_min": 3.75,
+            "avg_tci": 0.5, "tci_list": [0.5], "high_exposure_m": 0.0,
+        },
+    )
+    G = _mini_two_route_graph()
+    tci_map = {**{e: 2000.0 for e in _SHORT_EDGES}, **{e: 1.0 for e in _LONG_EDGES}}
+
+    def _weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, shade_factor):
+        wdict = {e: _LEN[e] * (tci_map[e] ** shade_factor) for e in tci_map}
+        return wdict, tci_map
+
+    out = plan_route(
+        "A", "B", use_shaded=True, nav_hour=13.0,
+        geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
+        weights_fn=_weights_fn, has_model=True, graph=G, shade_factor=1.0,
+    )
+
+    assert out["mode"] == "fast"
+    assert out["fallback"] == "detour_cap_unreachable"
+    assert round(out["route_result"]["distance_m"]) == 300

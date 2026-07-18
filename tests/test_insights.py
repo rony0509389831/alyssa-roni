@@ -1,6 +1,8 @@
 """בדיקות ל-compute_route_insights + compute_length_route (ללא רשת; גרף סינתטי זעיר)."""
 import networkx as nx
-from src.routing import compute_route_insights, compute_length_route, WALK_SPEED_MPM
+from src.routing import (
+    compute_route_insights, compute_length_route, WALK_SPEED_MPM, _summarize_path,
+)
 
 
 def _mini_graph():
@@ -87,3 +89,26 @@ def test_insights_handles_missing_avg_tci():
     ins = compute_route_insights(shaded, baseline)
     assert ins["tci_saved"] is None                      # אין TCI → אין חיסכון-TCI
     assert ins["extra_min"] == 6.0
+
+
+def test_avg_tci_is_length_weighted_not_segment_count():
+    """avg_tci חייב לשקלל לפי אורך המקטע בפועל (מטרים), לא לפי מספר מקטעים —
+    תוקן 2026-07-18 (ערב): מקטע ארוך וחם צריך להשפיע על הממוצע יותר ממקטע קצר
+    וקריר, כי רוב ההליכה בפועל עוברת בו. הממוצע הישן (לא-משוקלל) על הדוגמה
+    הזו היה נותן (2.0+9.0)/2=5.5 — "בינוני" — למרות ש-99% מהמרחק (990 מ' מתוך
+    1000) הוא בחלק החם (TCI=9.0)."""
+    G = nx.MultiDiGraph()
+    G.graph["crs"] = "EPSG:4326"
+    G.add_node(1, x=34.7700, y=32.0800)
+    G.add_node(2, x=34.7701, y=32.0800)
+    G.add_node(3, x=34.7710, y=32.0800)
+    G.add_edge(1, 2, key=0, length=10.0)      # מקטע קצר וקריר
+    G.add_edge(2, 3, key=0, length=990.0)     # מקטע ארוך וחם
+    tci_by_uv = {(1, 2): 2.0, (2, 3): 9.0}
+
+    out = _summarize_path(G, [1, 2, 3], tci_by_uv)
+
+    expected = (10.0 * 2.0 + 990.0 * 9.0) / 1000.0
+    assert round(out["avg_tci"], 3) == round(expected, 3)   # משוקלל-אורך, לא (2+9)/2
+    assert out["avg_tci"] > 8.9                              # כמעט כל המרחק חם — הממוצע חייב לשקף זאת
+    assert abs(out["avg_tci"] - 5.5) > 3.0                    # רחוק בבירור מהממוצע-הישן הלא-משוקלל
