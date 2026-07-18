@@ -29,6 +29,7 @@ except ImportError:
 try:
     from src.routing import (
         geocode_address, compute_tci_weights, compute_route,
+        compute_edge_tci, weights_from_edge_tci,
         build_route_map, plan_route, load_shadow_coverage,
         compute_length_route, compute_route_insights,
         _DID_YOU_KNOW,
@@ -332,15 +333,20 @@ st.markdown(
 
         /* אייקון-העזרה ("?" ליד תוויות עם help=, כמו בורר העדפת-מסלול ומדדי TCI) —
            לא עוקב אחרי --ink/--data-theme שלנו כברירת מחדל, ובמצב הכהה המותאם
-           של האפליקציה כמעט לא נראה על הרקע הכהה (2026-07-21). כמו stStatusWidget
-           למעלה — צביעה מפורשת לפי var(--muted), שקריא בשני המצבים. */
+           של האפליקציה כמעט לא נראה על הרקע הכהה (2026-07-21). צבוע ב-var(--shade)
+           (ירוק המותג — ניגודיות טובה גם בהיר #0E7C66 וגם כהה #35C9A0) ומוגדל מעט
+           כדי שיהיה ברור וקליק-בלי (2026-07-18). */
         [data-testid="stTooltipIcon"] {
-            color: var(--muted) !important;
+            color: var(--shade) !important;
             opacity: 1 !important;
+            width: 1.15rem !important;
+            height: 1.15rem !important;
         }
         [data-testid="stTooltipIcon"] svg,
         [data-testid="stTooltipIcon"] svg path {
-            fill: var(--muted) !important;
+            fill: var(--shade) !important;
+            width: 1.15rem !important;
+            height: 1.15rem !important;
         }
 
         /* בורר העדפת מסלול — pill group קופצני */
@@ -513,25 +519,41 @@ def _load_nav_graph():
 
 
 @st.cache_data(show_spinner=False)
+def _precompute_edge_tci(
+    sun_alt_r: float, sun_az_r: float,
+    cloud_r: float, temp_r: float, hum_r: float,
+):
+    """
+    מחשב TCI פר-קשת (58k) — **החלק היקר** (model.predict), אינו תלוי ב-shade_factor.
+    ממוטמן לפי מזג-אוויר בלבד, כך שבמהלך לולאת ה-backoff (הרבה shade_factor, אותו
+    מזג-אוויר) ה-predict רץ פעם אחת ולא עשרות פעמים.
+    """
+    _bundle   = load_tci_model()
+    _edges_df = load_edges_full()
+    if _bundle is None or _edges_df is None:
+        return None
+    return compute_edge_tci(
+        _edges_df, _bundle,
+        float(sun_alt_r), float(sun_az_r),
+        float(cloud_r), float(temp_r), float(hum_r),
+    )
+
+
+@st.cache_data(show_spinner=False)
 def _precompute_nav_weights(
     sun_alt_r: float, sun_az_r: float,
     cloud_r: float, temp_r: float, hum_r: float,
     shade_factor: float = 1.0,
 ):
     """
-    מחשב TCI ל-58k קשתות ומחזיר (weight_dict, tci_by_uv).
-    ממוטמן לפי פרמטרי מזג אוויר מעוגלים + shade_factor — אותם תנאים → cache hit (0ms).
+    מחזיר (weight_dict, tci_by_uv) לניווט. שכבת החֶזְקָה הזולה מעל edge_tci הממוטמן —
+    ה-predict היקר כבר בוצע ב-_precompute_edge_tci (cache hit אחרי הקריאה הראשונה).
+    ממוטמן לפי מזג אוויר + shade_factor.
     """
-    _bundle   = load_tci_model()
-    _edges_df = load_edges_full()
-    if _bundle is None or _edges_df is None:
+    edge_tci = _precompute_edge_tci(sun_alt_r, sun_az_r, cloud_r, temp_r, hum_r)
+    if edge_tci is None:
         return None, None
-    return compute_tci_weights(
-        _edges_df, _bundle,
-        float(sun_alt_r), float(sun_az_r),
-        float(cloud_r), float(temp_r), float(hum_r),
-        shade_factor=float(shade_factor),
-    )
+    return weights_from_edge_tci(edge_tci, float(shade_factor))
 
 
 @st.cache_data
@@ -976,6 +998,7 @@ if find_btn or _quick_run:
             "tier_escalated":  "🌳 מגבלת העיקוף של הרמה שבחרת הייתה צמודה מדי — הרחבנו אוטומטית לרמת \"הרבה צל\" כדי למצוא מסלול מוצל.",
             "best_effort_over_budget": "🥵 לא נמצא מסלול בתוך תקציב העיקוף הרגיל — מוצג המסלול הכי קריר שנמצא, גם אם הוא חורג מהרגיל.",
             "detour_cap_unreachable": "🥵 לא נמצא מסלול מוצל קריר יותר מהמסלול המהיר בשום תקציב עיקוף — מציג מסלול מהיר.",
+            "shade_gain_negligible": "🌿 המסלול הישיר כבר מוצל — אין טעם בעיקוף כרגע, אז מוצג המסלול הישיר.",
         }
         if plan is not None and plan["fallback"] in _FALLBACK_MSGS:
             st.info(_FALLBACK_MSGS[plan["fallback"]])

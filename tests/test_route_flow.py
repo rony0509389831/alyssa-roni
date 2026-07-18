@@ -291,3 +291,75 @@ def test_neither_tier_fits_and_best_effort_not_cooler_falls_back_to_fast(monkeyp
     assert out["mode"] == "fast"
     assert out["fallback"] == "detour_cap_unreachable"
     assert round(out["route_result"]["distance_m"]) == 300
+
+
+def test_backoff_binary_search_returns_maximal_fitting_factor():
+    """החיפוש הבינארי (שהחליף את הסריקה הלינארית, 2026-07-18) מחזיר את ה-shade_factor
+    ה**גבוה ביותר** על רשת ה-0.1 שעדיין נכנס לתקציב — לא רק 'איזשהו' factor, וגם לא
+    קופץ מעל הסף. כאן הסף האנליטי נופל בין 0.6 ל-0.7: short=300מ'/TCI=2.9 מול
+    long=600מ'/TCI=1, תקציב 'מעט צל'=1.20×300=360מ'. short נבחר כל עוד
+    300×2.9^sf<600 ⇔ 2.9^sf<2 ⇔ sf<0.65 — אז ה-decile הגבוה-ביותר שנכנס הוא 0.6
+    (ב-0.7 כבר נבחרת הדרך הארוכה 600מ' שחורגת). מוודא שהבינארי מתכנס לערך-אמצע הנכון."""
+    G = _mini_two_route_graph()
+    tci_map = {**{e: 2.9 for e in _SHORT_EDGES}, **{e: 1.0 for e in _LONG_EDGES}}
+
+    out = plan_route(
+        "A", "B", use_shaded=True, nav_hour=13.0,
+        geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
+        weights_fn=_stub_weights_fn_factory(tci_map),
+        has_model=True, graph=G, shade_factor=1.0,   # "מעט צל"
+    )
+
+    assert out["mode"] == "shaded"
+    assert out["shade_factor_used"] == 0.6                    # decile גבוה-ביותר שנכנס (לא 0.1, לא 1.0)
+    assert round(out["route_result"]["distance_m"]) == 300    # הדרך הקצרה, בתוך התקציב
+    assert out["capped"] is True
+
+
+# ---------- שער רווח-צל: לא לעקוף כשהשיפור זניח (הבאג ש-rony דיווחה) ----------
+
+def _two_route_graph_with_lengths(short_tci, long_tci):
+    """גרף A→B: קצר 300מ' (2×150) מול ארוך 340מ' (113+113+114), עם TCI פר-דרך."""
+    G = nx.MultiDiGraph()
+    G.graph["crs"] = "EPSG:4326"
+    for n, (x, y) in _XY.items():
+        G.add_node(n, x=x, y=y)
+    lens = {(1, 2): 150.0, (2, 3): 150.0, (1, 4): 113.0, (4, 5): 113.0, (5, 3): 114.0}
+    for u, v in _SHORT_EDGES + _LONG_EDGES:
+        G.add_edge(u, v, key=0, length=lens[(u, v)])
+    tci_map = {**{e: short_tci for e in _SHORT_EDGES}, **{e: long_tci for e in _LONG_EDGES}}
+
+    def _wf(a, b, c, d, e, sf):
+        return {x: lens[x] * (tci_map[x] ** sf) for x in tci_map}, tci_map
+    return G, _wf
+
+
+def test_negligible_shade_gain_returns_direct():
+    """עיקוף חסר-תועלת: הדרך המוצלת (340מ') חוסכת רק 0.5 TCI מול הישירה (300מ', TCI=2)
+    — מתחת ל-MIN_TCI_GAIN=1.0. אין טעם לעקוף כשהאזור כבר קריר, אז plan_route מחזיר
+    את המסלול הישיר (fallback='shade_gain_negligible'). זה בדיוק הבאג שדווח: ב-10:00
+    הכל TCI~2 והראוטר עדיין מתפתל בשביל שיפור זעיר."""
+    G, _wf = _two_route_graph_with_lengths(short_tci=2.0, long_tci=1.5)   # פער 0.5 < 1.0
+    out = plan_route(
+        "A", "B", use_shaded=True, nav_hour=13.0,
+        geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
+        weights_fn=_wf, has_model=True, graph=G, shade_factor=3.0,
+    )
+    assert out["mode"] == "shaded"
+    assert out["fallback"] == "shade_gain_negligible"
+    assert round(out["route_result"]["distance_m"]) == 300      # הישיר, לא העיקוף 340
+    assert out["shade_factor_used"] == 0.0
+
+
+def test_meaningful_shade_gain_keeps_detour():
+    """כשהעיקוף כן חוסך צל משמעותי (7 נקודות: ישיר TCI=8 → מוצל TCI=1) — העיקוף נשמר,
+    השער לא נכנס. מוודא שהתיקון לא 'הורג' עיקופים מוצדקים."""
+    G, _wf = _two_route_graph_with_lengths(short_tci=8.0, long_tci=1.0)   # פער 7 > 1.0
+    out = plan_route(
+        "A", "B", use_shaded=True, nav_hour=13.0,
+        geocode_fn=lambda addr: _A_LATLON if addr == "A" else _B_LATLON,
+        weights_fn=_wf, has_model=True, graph=G, shade_factor=3.0,
+    )
+    assert out["mode"] == "shaded"
+    assert out.get("fallback") != "shade_gain_negligible"       # העיקוף המוצדק נשמר
+    assert round(out["route_result"]["distance_m"]) == 340      # הדרך המוצלת הארוכה

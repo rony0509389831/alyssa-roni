@@ -139,6 +139,11 @@ _DEFAULT_DETOUR_CAP = (DETOUR_CAP, 30.0)   # גיבוי אם shade_r לא אחד
 # 5.5 = מחצית עליונה של סקאלת ה-TCI (1-10). נבחר 5.5 ולא 7 כי בפועל ה-TCI מגיע ל-~6.4
 # לכל היותר בשעות אחה"צ (מגיע מעל 7 רק סביב שיא הצהריים) — סף 7 היה משאיר את המדד 0 ברוב היום.
 HIGH_EXPOSURE_TCI = 5.5
+# רווח-צל מינימלי שמצדיק עיקוף: אם מסלול-הצל עוקף (ארוך מהישיר) אך משפר את ה-TCI
+# הממוצע בפחות מזה מול המסלול הישיר — העיקוף לא שווה, וחוזרים לישיר. פותר את
+# "העיקוף חסר-ההיגיון" כשהאזור כבר קריר (למשל ב-10:00 הכל TCI~1-2, אין מה להרוויח).
+# ניתן-לכוונון; 1.0 נקודה על סקאלת 1-10 = שיפור מוחשי מינימלי.
+MIN_TCI_GAIN = 1.0
 EDGES_FEATURES_PATH = Path("data/edges_features.parquet")
 
 _PREF_CACHE = None
@@ -511,7 +516,7 @@ def compute_route(origin_latlon: tuple, dest_latlon: tuple,
     return result
 
 
-def compute_tci_weights(
+def compute_edge_tci(
     edges_df: pd.DataFrame,
     model_bundle: dict,
     sun_altitude: float,
@@ -519,13 +524,12 @@ def compute_tci_weights(
     cloud_cover: float,
     temperature: float,
     humidity: float,
-    shade_factor: float = 1.0,
-) -> tuple:
+) -> pd.DataFrame:
     """
-    מחשב TCI לכל 58k קשתות הגרף ומחזיר (weight_dict, tci_by_uv).
-
-    פונקציה נפרדת כדי לאפשר caching ב-Streamlit לפי תנאי מזג אוויר —
-    אם השמש ומזג האוויר לא השתנו מאז הקריאה הקודמת, התוצאה חוזרת מה-cache (0ms).
+    מחשב TCI פר-קשת (58k) + מקדם-העדפה (רחוב-ירוק/מדרכה) — **החלק היקר**
+    (`model.predict` על 58k שורות) ש**אינו תלוי ב-shade_factor**. מחזיר DataFrame
+    קומפקטי (u, v, tci, length, factor). מופרד מ-`weights_from_edge_tci` כדי שבזמן
+    לולאת ה-backoff (הרבה shade_factor, אותו מזג-אוויר) ה-predict ירוץ פעם אחת בלבד.
     """
     _t0 = time.monotonic()
     ef = pd.DataFrame({
@@ -577,19 +581,62 @@ def compute_tci_weights(
         ).to_numpy()
         _factor = np.where(_is_ped, PEDESTRIAN_WEIGHT_FACTOR, 1.0) * _factor
 
-    # shade_factor>1 מגביר הבדלי TCI: TCI=2→2^1.5≈2.8, TCI=8→8^1.5≈22.6 — פי 8 במקום פי 4
-    _tci_w = np.clip(ef["tci"] ** shade_factor, 1.0, None)
-    ef["tci_weight"] = _tci_w * ef["length"].clip(lower=0.1) * _factor
+    _log_timing("edge TCI (58k edges, CPU)", time.monotonic() - _t0)
+    return pd.DataFrame({
+        "u":      ef["u"].to_numpy(),
+        "v":      ef["v"].to_numpy(),
+        "tci":    ef["tci"].to_numpy(),
+        "length": ef["length"].to_numpy(),
+        "factor": _factor,
+    })
 
-    _gb = ef.groupby(["u", "v"]).agg(tci_weight=("tci_weight", "min"), tci=("tci", "mean"))
+
+def weights_from_edge_tci(edge_tci: pd.DataFrame, shade_factor: float = 1.0) -> tuple:
+    """
+    **החלק הזול** התלוי-ב-shade_factor: מעלה את ה-TCI בחזקת shade_factor, בונה משקל
+    (`tci^sf × אורך × מקדם-העדפה`) ומאחד פר-קשת. מחזיר (weight_dict, tci_by_uv).
+    לא משנה את edge_tci במקום (הוא ממוטמן ב-app) — קורא בלבד דרך numpy.
+    """
+    tci        = edge_tci["tci"].to_numpy()
+    # shade_factor>1 מגביר הבדלי TCI: TCI=2→2^1.5≈2.8, TCI=8→8^1.5≈22.6 — פי 8 במקום פי 4
+    _tci_w     = np.clip(tci ** float(shade_factor), 1.0, None)
+    tci_weight = _tci_w * np.clip(edge_tci["length"].to_numpy(), 0.1, None) * edge_tci["factor"].to_numpy()
+
+    _gb = pd.DataFrame({
+        "u": edge_tci["u"].to_numpy(),
+        "v": edge_tci["v"].to_numpy(),
+        "tci": tci,
+        "tci_weight": tci_weight,
+    }).groupby(["u", "v"]).agg(tci_weight=("tci_weight", "min"), tci=("tci", "mean"))
     weight_dict = _gb["tci_weight"].to_dict()
     tci_by_uv   = _gb["tci"].to_dict()
     for (u, v), w in list(weight_dict.items()):
         weight_dict.setdefault((v, u), w)
         tci_by_uv.setdefault((v, u), tci_by_uv[(u, v)])
-
-    _log_timing("TCI weights (58k edges, CPU)", time.monotonic() - _t0)
     return weight_dict, tci_by_uv
+
+
+def compute_tci_weights(
+    edges_df: pd.DataFrame,
+    model_bundle: dict,
+    sun_altitude: float,
+    sun_azimuth: float,
+    cloud_cover: float,
+    temperature: float,
+    humidity: float,
+    shade_factor: float = 1.0,
+) -> tuple:
+    """
+    מחשב TCI לכל 58k קשתות הגרף ומחזיר (weight_dict, tci_by_uv).
+
+    עטיפה דקה מעל compute_edge_tci (החלק היקר, אינו תלוי shade_factor) +
+    weights_from_edge_tci (החלק הזול). נשמרה לתאימות-לאחור — פלט זהה לחלוטין.
+    """
+    edge_tci = compute_edge_tci(
+        edges_df, model_bundle, sun_altitude, sun_azimuth,
+        cloud_cover, temperature, humidity,
+    )
+    return weights_from_edge_tci(edge_tci, shade_factor)
 
 
 def _haversine_latlon(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -629,10 +676,19 @@ def compute_shaded_route(
 
     _t0 = time.monotonic()
     try:
+        def _edge_weight(u, v, d):
+            # d ב-MultiDiGraph הוא {key: data} של כל הקשתות המקבילות — לא קשת בודדת.
+            # לכן ה-fallback חייב לחלץ length דרך d.values() (d.get("length") היה מחזיר
+            # תמיד None→50 קבוע, ומזער הופ-קאונט במקום מרחק כשקשת חסרה מ-weight_dict).
+            w = weight_dict.get((u, v))
+            if w is not None:
+                return w
+            return min(dd.get("length", 50) for dd in d.values()) * 5
+
         path = nx.astar_path(
             G, orig_node, dest_node,
             heuristic=lambda u, v: _haversine_m(G, u, v) * 0.5,
-            weight=lambda u, v, d: weight_dict.get((u, v), d.get("length", 50) * 5),
+            weight=_edge_weight,
         )
     except nx.NetworkXNoPath:
         raise ValueError("לא נמצא מסלול בין הנקודות שהוגדרו")
@@ -1003,36 +1059,99 @@ def plan_route(
 
     base_time_min = base_dist / WALK_SPEED_MPM
 
+    # cache משותף לשתי קריאות _fit_within_cap (רמה-נבחרת + הסלמה): אותו factor על
+    # אותו מזג-אוויר/גרף → אותו מסלול בדיוק, אז לא מחשבים אותו פעמיים.
+    _route_memo = {}
+
     def _fit_within_cap(shade_start, start_route=None):
-        """מריץ backoff (צעדי 0.1, רצפה 0.1) עבור רמת-צל אחת כנגד התקרה
-        האפקטיבית שלה. מחזיר (route, factor_used, fits_within_cap)."""
+        """מוצא את ה-shade_factor הגבוה ביותר (על רשת 0.1) שהמסלול שלו עדיין נכנס
+        לתקרת-העיקוף האפקטיבית של הרמה, בחיפוש בינארי (~5 חישובי-מסלול) במקום סריקה
+        לינארית (~30). מסתמך על מונוטוניות distance(shade_factor): יותר משקל-צל → עיקוף
+        ארוך/שווה. מחזיר (route, factor_used, fits_within_cap). רצפה 0.1. cache משותף
+        (_route_memo) נמנע מחישוב כפול של אותו decile בין הרמות."""
         ratio_cap, time_cap_min = _TIER_DETOUR_CAPS.get(shade_start, _DEFAULT_DETOUR_CAP)
         eff_cap = (min(ratio_cap, 1 + (time_cap_min / base_time_min))
                    if base_time_min > 0 else ratio_cap)
-        fac = shade_start
+        thresh = eff_cap * base_dist
+        hi_d = int(round(shade_start * 10))   # deciles: shade_factor × 10
+        lo_d = 1                               # רצפה = 0.1
         if start_route is not None:
-            rt = start_route
-        else:
-            _w, _t = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, fac)
-            rt = compute_shaded_route(origin_latlon, dest_latlon, _w, _t, G=graph)
-        floor = 0.1
-        while rt["distance_m"] > eff_cap * base_dist and fac > floor:
-            fac = max(floor, round((fac - 0.1) * 10) / 10)
-            _w, _t = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, fac)
-            if _w is None:
-                break
-            rt = compute_shaded_route(origin_latlon, dest_latlon, _w, _t, G=graph)
-        return rt, fac, (rt["distance_m"] <= eff_cap * base_dist)
+            _route_memo.setdefault(hi_d, start_route)
+
+        def _route_at(d):
+            if d not in _route_memo:
+                _w, _t = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, d / 10.0)
+                _route_memo[d] = (None if _w is None else
+                                  compute_shaded_route(origin_latlon, dest_latlon, _w, _t, G=graph))
+            return _route_memo[d]
+
+        def _fits(d):
+            rt = _route_at(d)
+            return rt is not None and rt["distance_m"] <= thresh
+
+        # הרמה המלאה כבר נכנסת → אין צורך בחיפוש (המקרה השכיח).
+        if _fits(hi_d):
+            return _route_at(hi_d), hi_d / 10.0, True
+
+        # חיפוש בינארי על [lo_d, hi_d-1] ל-decile הגבוה ביותר שנכנס.
+        best_d, lo, hi = None, lo_d, hi_d - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if _fits(mid):
+                best_d, lo = mid, mid + 1
+            else:
+                hi = mid - 1
+        if best_d is not None:
+            return _route_at(best_d), best_d / 10.0, True
+
+        # אף factor לא נכנס — מחזירים את הרצפה (fits=False), כמו הסריקה הישנה שעצרה ברצפה.
+        rt_floor = _route_at(lo_d)
+        if rt_floor is None:                       # weights_fn שבור לאורך כל הדרך
+            return (_route_at(hi_d) or start_route), hi_d / 10.0, False
+        return rt_floor, lo_d / 10.0, (rt_floor["distance_m"] <= thresh)
+
+    # שער רווח-צל: מסלול-הבסיס הישיר מחושב עצלנית פעם אחת. אם המסלול המוצל שנבחר
+    # *עוקף* (ארוך מהישיר) אך משפר את ה-TCI הממוצע בפחות מ-MIN_TCI_GAIN — העיקוף
+    # אינו שווה (למשל ב-10:00 הכל כבר קריר), ומחזירים את הישיר. אם המסלול המוצל כבר
+    # מתכנס לישיר (לא עוקף) — השער לא נוגע בו, מוחזר כרגיל.
+    _direct_holder = {}
+
+    def _direct_route():
+        if "r" not in _direct_holder:
+            try:
+                _direct_holder["r"] = compute_length_route(
+                    origin_latlon, dest_latlon, tci_uv, G=graph)
+            except Exception:
+                _direct_holder["r"] = None
+        return _direct_holder["r"]
+
+    def _finalize(route_sel, factor_sel, capped_sel, fallback_sel):
+        direct = _direct_route()
+        if (direct is not None and route_sel is not None
+                and route_sel.get("distance_m", 0.0) > direct.get("distance_m", 0.0) + 1.0
+                and route_sel.get("avg_tci") is not None and direct.get("avg_tci") is not None
+                and (direct["avg_tci"] - route_sel["avg_tci"]) < MIN_TCI_GAIN):
+            result["route_result"] = direct
+            result["color"] = "#27ae60"
+            result["mode"] = "shaded"
+            result["shade_factor_used"] = 0.0
+            result["capped"] = True
+            result["fallback"] = "shade_gain_negligible"
+            result["tci_uv"] = tci_uv
+            return result
+        result["route_result"] = route_sel
+        result["color"] = "#27ae60"
+        result["mode"] = "shaded"
+        result["shade_factor_used"] = factor_sel
+        result["capped"] = capped_sel
+        if fallback_sel is not None:
+            result["fallback"] = fallback_sel
+        result["tci_uv"] = tci_uv
+        return result
 
     route1, factor1, fits1 = _fit_within_cap(shade_r, start_route=route)
     if fits1:
-        result["route_result"] = route1
-        result["color"] = "#27ae60"
-        result["mode"] = "shaded"
-        result["shade_factor_used"] = factor1
-        result["capped"] = (factor1 != shade_r)
-        result["tci_uv"] = tci_uv
-        return result
+        return _finalize(route1, factor1, (factor1 != shade_r), None)
 
     WIDEST_TIER = 3.0
     best_route, best_factor = route1, factor1
@@ -1041,14 +1160,7 @@ def plan_route(
             on_progress("מרחיב את תקציב העיקוף לרמת 'הרבה צל'...")
         route2, factor2, fits2 = _fit_within_cap(WIDEST_TIER)
         if fits2:
-            result["route_result"] = route2
-            result["color"] = "#27ae60"
-            result["mode"] = "shaded"
-            result["shade_factor_used"] = factor2
-            result["capped"] = True
-            result["fallback"] = "tier_escalated"
-            result["tci_uv"] = tci_uv
-            return result
+            return _finalize(route2, factor2, True, "tier_escalated")
         if (route2.get("avg_tci") is not None and
                 (best_route.get("avg_tci") is None or route2["avg_tci"] < best_route["avg_tci"])):
             best_route, best_factor = route2, factor2
@@ -1058,14 +1170,7 @@ def plan_route(
     fast_route = compute_route(origin_latlon, dest_latlon, tci_by_uv=tci_uv, G=graph)
     if (best_route.get("avg_tci") is not None and fast_route.get("avg_tci") is not None
             and best_route["avg_tci"] < fast_route["avg_tci"]):
-        result["route_result"] = best_route
-        result["color"] = "#27ae60"
-        result["mode"] = "shaded"
-        result["shade_factor_used"] = best_factor
-        result["capped"] = True
-        result["fallback"] = "best_effort_over_budget"
-        result["tci_uv"] = tci_uv
-        return result
+        return _finalize(best_route, best_factor, True, "best_effort_over_budget")
 
     if on_progress:
         on_progress("לא נמצא מסלול מוצל קריר יותר מהמהיר — עובר למסלול מהיר...")
@@ -1173,6 +1278,19 @@ def build_route_map(
                 margin-left:5px;vertical-align:middle;"></span>{_fast_legend_line}
         </div>"""
         m.get_root().html.add_child(folium.Element(legend_html))
+
+    # קווי-חיבור מהסמן לקצה-המסלול: המסלול מצויר מצמתי-הגרף, והגיאוקוד עשוי ליפול
+    # עשרות מטרים מהצומת הקרוב (נמדד ~72מ' במוצא). קו מקווקו דק כדי שהמסלול "יגיע"
+    # עד הסמנים במקום להיעצר בפער.
+    if pts:
+        if _haversine_latlon(*origin_latlon, *pts[0]) > 5:
+            folium.PolyLine([origin_latlon, pts[0]], color="#7f8c8d", weight=3,
+                            opacity=0.75, dash_array="3 7",
+                            tooltip="חיבור להתחלת המסלול").add_to(m)
+        if _haversine_latlon(*dest_latlon, *pts[-1]) > 5:
+            folium.PolyLine([pts[-1], dest_latlon], color="#7f8c8d", weight=3,
+                            opacity=0.75, dash_array="3 7",
+                            tooltip="חיבור ליעד").add_to(m)
 
     folium.Marker(
         location=origin_latlon,
