@@ -60,6 +60,24 @@ def test_night_hour_overrides_explicit_shade_preference():
     assert out4["mode"] == "shaded" and out4["shade_level"] == "max"
 
 
+def test_diminished_shade_maps_to_short():
+    """בקשת-צל ממותנת ("קצת מוצלת") → "מעט צל" (short), לא "הרבה צל" (max)."""
+    out = _validate({"origin": "לוינסקי", "destination": "בוגרשוב", "hour": 12,
+                     "mode": "shaded", "shade_level": "max"},
+                    today_str=_TODAY,
+                    user_text="מלוינסקי לבוגרשוב בדרך קצת מוצלת")
+    assert out["shade_level"] == "short"
+
+
+def test_plain_shade_request_stays_max():
+    """בקשת-צל לא-ממותנת ("בדרך מוצלת") נשארת max — ה-override חל רק עם מילת-המעטה."""
+    out = _validate({"origin": "רוטשילד", "destination": "שוק הכרמל", "hour": 12,
+                     "mode": "shaded", "shade_level": "max"},
+                    today_str=_TODAY,
+                    user_text="מרוטשילד לשוק הכרמל בדרך מוצלת")
+    assert out["shade_level"] == "max"
+
+
 def test_missing_origin_or_dest_is_error():
     assert "error" in _validate({"destination": "שוק הכרמל"}, today_str=_TODAY)
     assert "error" in _validate({"origin": "כיכר רבין", "destination": "  "}, today_str=_TODAY)

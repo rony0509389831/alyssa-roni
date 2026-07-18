@@ -100,11 +100,13 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         '"doesn\'t matter about shade", "לא חשוב לי צל") → treat as a SPEED preference: '
         'mode="fast", shade_level="short" (no reason to detour for shade the user does not want).\n'
         '  "shade_level"    - intensity of shade preference. One of:\n'
-        '    "short"    = fastest/shortest, minimal shade weighting (user says "הכי מהיר", "קצר", '
-        '"fast", "short", or is indifferent to shade like "לא אכפת לי מהצל").\n'
-        '    "max"      = wants shade at all, qualified or not ("מוצל", "בצל", "ירוק", "cool", "green route", '
-        '"shaded", "הכי מוצל", "צל מקסימלי", "max shade" — any shade request maps here, there is no separate '
-        '"balanced" level).\n'
+        '    "short"    = fastest/shortest, minimal shade weighting. Use when the user says "הכי מהיר", '
+        '"קצר", "fast", "short", is indifferent to shade ("לא אכפת לי מהצל"), OR wants only a LITTLE / '
+        'light shade ("קצת צל", "קצת מוצל", "מעט צל", "a little shade", "slightly shaded") — a DIMINISHED '
+        'shade request belongs here, NOT in "max".\n'
+        '    "max"      = an unqualified or strong shade request ("מוצל", "בצל", "ירוק", "cool", "green route", '
+        '"shaded", "הכי מוצל", "צל מקסימלי", "max shade"). Any shade request that is NOT explicitly diminished '
+        'maps here (there is no separate "balanced" level). If it IS diminished ("קצת"/"a little") → use "short".\n'
         '    null       = let conditions decide (see rules below), or no preference data.\n'
         '  "recommendation" - ONE of these exact lowercase codes when you auto-choose a shade_level '
         'from the conditions: "night", "hot", "warm". Use null if the user was explicit about shade '
@@ -126,6 +128,8 @@ def _build_system(today_str: str, tomorrow_str: str, context_str: str = "",
         "Examples:\n"
         'Input: "מרוטשילד 20 לשוק הכרמל ב-3 אחה\\"צ בדרך הכי מוצלת"\n'
         f'Output: {{"origin": "רוטשילד 20", "destination": "שוק הכרמל", "hour": 15, "date": null, "mode": "shaded", "shade_level": "max", "recommendation": null}}\n'
+        'Input: "מלוינסקי לבוגרשוב מחר ב-12 בדרך קצת מוצלת"\n'
+        f'Output: {{"origin": "לוינסקי", "destination": "בוגרשוב", "hour": 12, "date": "{tomorrow_str}", "mode": "shaded", "shade_level": "short", "recommendation": null}}\n'
         'Input: "הכי מהיר מכיכר דיזנגוף לתחנה המרכזית מחר"\n'
         f'Output: {{"origin": "כיכר דיזנגוף", "destination": "תחנה מרכזית", "hour": null, "date": "{tomorrow_str}", "mode": "fast", "shade_level": "short", "recommendation": null}}\n'
         'Input: "מרוטשילד לכרמל מחרתיים ב-10 בבוקר"\n'
@@ -172,6 +176,10 @@ def _coerce_mode(value):
 
 
 _SHADE_LEVELS = frozenset({"short", "max"})
+
+# מילות-המעטה: בקשת-צל בלוויית אחת מאלה = "קצת צל" → "מעט צל" (short), לא max.
+# ר' _validate — override דטרמיניסטי, כי הוראת הפרומפט לבדה הסתברותית (כמו כלל-הלילה).
+_SHADE_DIMINISHERS = ("קצת", "מעט", "טיפה", "a little", "a bit", "slightly", "somewhat", "light")
 
 
 def _coerce_shade_level(value):
@@ -295,10 +303,13 @@ def _is_night(hour, sun_altitude=None) -> bool:
     return False
 
 
-def _validate(raw: dict, today_str: str, sun_altitude=None) -> dict:
+def _validate(raw: dict, today_str: str, sun_altitude=None, user_text: str = "") -> dict:
     """
     ולידציית פלט ה-LLM. מחזיר {origin, destination, hour, date, mode, shade_level, recommendation}
     או {error: ...} אם חסרים מוצא/יעד (לניווט לא ממציאים כתובת — ר' M4 plan).
+
+    user_text (אופציונלי): הטקסט המקורי — נסרק ל"מילות-המעטה" (קצת/מעט/a little)
+    כדי להוריד בקשת-צל ממותנת מ-max ל-short (ר' _SHADE_DIMINISHERS).
     """
     if not isinstance(raw, dict):
         return {"error": _ERROR_MSG}
@@ -315,6 +326,12 @@ def _validate(raw: dict, today_str: str, sun_altitude=None) -> dict:
         "shade_level": _coerce_shade_level(raw.get("shade_level")),
         "recommendation": _coerce_recommendation(raw.get("recommendation")),
     }
+    # בקשת-צל *ממותנת* ("קצת צל"/"a little shade") → "מעט צל" (short), לא "הרבה צל" (max).
+    # במערכת 2-הרמות "קצת" קרוב ל"מעט" הרבה יותר מ"מקסימום". גייטינג על shade_level=="max"
+    # מבטיח שזה חל רק כשזוהתה בקשת-צל — "קצת מהר" (short/null) לא יושפע. הפרומפט לבדו
+    # הסתברותי (כמו כלל-הלילה), לכן override דטרמיניסטי כאן מבטיח את ההתנהגות.
+    if result["shade_level"] == "max" and any(d in user_text.lower() for d in _SHADE_DIMINISHERS):
+        result["shade_level"] = "short"
     # תאריך מחוץ לאופק תחזית מזג-האוויר (עבר, או מעבר ל-7 ימים) → שגיאה: אין נתוני
     # מזג-אוויר לתאריך כזה, אז עדיף להחזיר הודעה ברורה מאשר לנווט לפי מזג-אוויר שגוי.
     if _date_out_of_range(result["date"], today_str):
@@ -422,7 +439,7 @@ def extract_route_params(
         if any(k in _msg for k in ("connect", "network", "timeout", "ssl")):
             return {"error": "⚠️ בעיית חיבור לרשת — בדקו אינטרנט ונסו שוב"}
         return {"error": f"⚠️ שגיאת Groq: {type(_exc).__name__}: {str(_exc)[:120]}"}
-    return _validate(raw, today_str, sun_altitude)
+    return _validate(raw, today_str, sun_altitude, user_text=user_text)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

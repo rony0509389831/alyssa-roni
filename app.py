@@ -634,16 +634,17 @@ _nav_G = _load_nav_graph()
 
 
 def _clamped_now() -> tuple:
-    """שעה נוכחית מעוגלת לחצי-השעה הקרובה ביותר (round-half-up: 15 דק' בדיוק
-    מעוגלות למעלה), בטווח [6:00,18:30] (טווח הניווט המוצל).
+    """שעה נוכחית בשעון ישראל, מעוגלת לחצי-השעה הקרובה ביותר (round-half-up: 15 דק'
+    בדיוק מעוגלות למעלה). ללא הצמדה לטווח — מחזירה את השעה האמיתית בכל שעות היממה
+    (בערב/לילה השמש שלילית → plan_route נופל אוטומטית למסלול מהיר; ר' טיפול-הלילה למטה).
+    השם ההיסטורי "clamped" נשמר לתאימות הקוראים, גם אם ההצמדה עצמה הוסרה.
 
     שעון ישראל במפורש — `datetime.now()` נאיבי מחזיר UTC על Streamlit Cloud (Linux),
     מה שהזיז את ברירת-המחדל 3 שעות אחורה (19:20 בישראל → 16:20 UTC → 16:00)."""
     from zoneinfo import ZoneInfo
     now = datetime.now(ZoneInfo("Asia/Jerusalem"))
     total = now.hour * 60 + now.minute
-    rounded = ((total + 15) // 30) * 30
-    rounded = max(6 * 60, min(rounded, 18 * 60 + 30))
+    rounded = (((total + 15) // 30) * 30) % 1440   # עיגול לחצי-שעה + גלישת 24:00→00:00
     return rounded // 60, rounded % 60
 
 
