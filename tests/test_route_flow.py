@@ -379,3 +379,19 @@ def test_route_backtrack_helper():
     assert _route_backtrack(back, dest) > 400        # ההתרחקות ~472מ' זוהתה
     # מסלול ריק/נקודתי → 0 (הגנה)
     assert _route_backtrack({"route_latlon": [(32.08, 34.78)]}, dest) == 0.0
+
+
+# ---------- תיקון-כתיב לא מחליף רחוב תקין ברחוב בעל שלד-שם דומה ----------
+
+def test_correct_street_spelling_prefers_real_street(monkeypatch):
+    """הבאג (2026-07-19): "שדרות שאול המלך 55" תוקן ל-"שדרות דוד המלך 55" כי difflib
+    בחר את "שדרות דוד המלך" (שלד "שדרות...המלך" משותף גבר על המילה המבדילה), למרות
+    ש"שאול המלך" קיים בגרף. עכשיו: שם תקין (עם/בלי קידומת) לא משתנה, וקידומת מנורמלת
+    לצורה שבגרף — לא לרחוב אחר."""
+    import src.routing as routing
+    fake = ["שאול המלך", "שדרות דוד המלך", "דוד המלך", "דיזנגוף", "רוטשילד", "שדרות רוטשילד"]
+    monkeypatch.setattr(routing, "_street_names", lambda: fake)
+    assert routing._correct_street_spelling("שדרות שאול המלך 55") == "שאול המלך 55"   # לא "דוד המלך"!
+    assert routing._correct_street_spelling("שאול המלך 55") == "שאול המלך 55"          # תקין → ללא שינוי
+    assert routing._correct_street_spelling("דיזינגוף 55") == "דיזנגוף 55"             # תיקון-שגיאת-כתיב נשמר
+    assert routing._correct_street_spelling("שוק הכרמל") == "שוק הכרמל"                # אין מספר-בית → לא נוגעים

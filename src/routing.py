@@ -408,9 +408,34 @@ def _correct_street_spelling(address: str) -> str:
     num = m.group(1).replace(" ", "")
     if not name_part:
         return address
-    match = difflib.get_close_matches(name_part, _street_names(), n=1, cutoff=0.8)
-    if match and match[0] != name_part:
-        return f"{match[0]} {num}"
+    names = _street_names()
+
+    # שם שכבר קיים בגרף כמות-שהוא → תקין, לא "מתקנים" (אחרת difflib היה מחליף שם
+    # אמיתי ברחוב אחר בעל שלד-מילים דומה).
+    if name_part in names:
+        return address
+
+    # צורה בלי קידומת-סוג-רחוב (הגרף מאחסן חלק מהשמות בלי "שדרות"/"רחוב"). אם הצורה
+    # המקוצרת היא שם-רחוב תקין — מנרמלים אליה, *לא* מריצים difflib. זה הבאג שתוקן
+    # (2026-07-19): "שדרות שאול המלך" גרם ל-difflib לבחור "שדרות דוד המלך" (שלד
+    # "שדרות...המלך" משותף גובר על המילה המבדילה) — למרות ש"שאול המלך" קיים בגרף.
+    stripped, used_prefix = name_part, ""
+    for p in _STREET_PREFIXES:
+        if name_part.startswith(p):
+            stripped, used_prefix = name_part[len(p):].strip(), p
+            break
+    if stripped != name_part and stripped in names:
+        return f"{stripped} {num}"
+
+    # אחרת — difflib על הצורה חסרת-הקידומת (כדי שהקידומת המשותפת לא תטה את ההתאמה).
+    match = difflib.get_close_matches(stripped, names, n=1, cutoff=0.8)
+    if match and match[0] not in (name_part, stripped):
+        best = match[0]
+        # אם המשתמש כתב קידומת והצורה-עם-קידומת היא השם הקנוני בגרף — נשמר אותה
+        # ("שדרות רוטשילד"); אחרת הצורה המנוקה ("שאול המלך", שבגרף בלי "שדרות").
+        if used_prefix and (used_prefix + best) in names:
+            best = used_prefix + best
+        return f"{best} {num}"
     return address
 
 
@@ -475,6 +500,26 @@ def geocode_address(address: str, on_progress=None) -> tuple:
         _ph = _photon_search(_pq, house_number=house_number)
         if _ph is not None:
             return _ph
+
+    # נפילה למרכז-הרחוב (2026-07-19): יש מספר-בית שלא נמצא בנתונים, אך ייתכן שהרחוב
+    # *כן* קיים (למשל "שאול המלך 55" — הרחוב אמיתי, בית 55 פשוט לא ב-OSM). עדיף מרכז-
+    # רחוב מכישלון מלא. שונה מבאג "יפת 4900" (שהתקבל בשקט כמדויק): כאן זו נפילה
+    # *מפורשת* לרמת-רחוב עם הודעה, לא התחזות לכתובת מדויקת.
+    if house_number is not None:
+        _street_only = _HOUSE_NUM_RE.sub("", address).strip()
+        if _street_only:
+            if on_progress:
+                on_progress(f"בית {house_number} לא נמצא — מציג את מרכז הרחוב '{_street_only}'...")
+            for _sq in dict.fromkeys([f"{_street_only}, תל אביב", _street_only]):
+                try:
+                    _sp = _nominatim_search(_sq)     # ללא house_number → רמת-רחוב
+                except Exception:
+                    continue
+                if _sp is None:
+                    continue
+                lat, lon = _sp
+                if TA_BBOX[0] <= lat <= TA_BBOX[2] and TA_BBOX[1] <= lon <= TA_BBOX[3]:
+                    return lat, lon
 
     raise ValueError(
         f"המיקום '{address}' לא נמצא באזור תל אביב — "
