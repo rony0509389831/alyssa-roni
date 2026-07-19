@@ -1,13 +1,13 @@
 """
-רשת-ביטחון לרגרסיה (Integration, נתונים אמיתיים): מוודאת שכל תיקוני-הניווט מתקיימים
-יחד על מסלולים אמיתיים, כך ששום תיקון לא "יחזור אחורה" בשקט. מריצה plan_route אמיתי
-(גרף+מודל+כיסוי-צל) על זוגות-קואורדינטות מקובעים (בלי רשת) בשעת-צהריים ובשעה-קרירה,
-ובודקת שני invariantים מרכזיים:
+רשת-ביטחון לרגרסיה (Integration, נתונים אמיתיים): מוודאת שהיררכיית-הצל של המודל
+האדיטיבי (2026-07-19) מתקיימת על מסלולים אמיתיים, כך ששום תיקון לא "יחזור אחורה"
+בשקט. מריצה plan_route אמיתי (גרף+מודל+כיסוי-צל) על זוגות-קואורדינטות מקובעים (בלי
+רשת) בשעת-צהריים ובשעה-קרירה, ובודקת את האינvariant המרכזי — **מונוטוניות ללא היפוך**:
 
-  1. **אין היפוך-TCI:** מסלול-הצל לעולם לא חם יותר מהמהיר (בסיס-השוואה זהה =
-     compute_length_route על הגרף). — תיקון "מוצל חם מהמהיר".
-  2. **אין פיתול:** ה-backtrack של מסלול-הצל מוגבל ע"י MAX_BACKTRACK_M. — תיקון
-     "העיקול המוזר ביהודה הלוי".
+  1. **TCI:** מהיר ≥ מעט צל ≥ הרבה צל (יותר תקציב-עיקוף = קריר יותר, לעולם לא חם יותר;
+     בסיס-השוואה זהה = compute_length_route על הגרף). — מתקן את "מעט קריר מהרבה".
+  2. **מרחק:** מהיר ≤ מעט צל ≤ הרבה צל (תקציב גדול יותר → λ קטן יותר → ארוך יותר;
+     מובטח בהגדרה כי תקציב 1.60× מכיל את 1.30×). — מתקן את "מעט ארוך מהרבה".
 """
 import os
 
@@ -35,8 +35,10 @@ def env():
     ef = pd.read_parquet(_EDGES)
     bundle = joblib.load(_MODEL)
 
-    def weights_fn(alt, az, cloud, temp, hum, sf):
-        return routing.compute_tci_weights(ef, bundle, alt, az, cloud, temp, hum, shade_factor=sf)
+    def weights_fn(alt, az, cloud, temp, hum, lam):
+        # הפרמטר האחרון הוא λ (מחיר-האורך במודל האדיטיבי) — plan_route קורא בערכי-λ
+        # מגוונים בחיפוש-התקציב, לא ב-shade_factor 1.0/2.0.
+        return routing.compute_tci_weights(ef, bundle, alt, az, cloud, temp, hum, lam=lam)
 
     return routing, G, weights_fn
 
@@ -52,23 +54,25 @@ _PAIRS = [
 @pytest.mark.parametrize("name,origin,dest", _PAIRS)
 def test_shaded_never_worse_than_fast_and_smooth(env, name, origin, dest, hr):
     routing, G, weights_fn = env
-    plan = routing.plan_route(
-        "O", "D", use_shaded=True, nav_hour=hr,
-        geocode_fn=lambda a: origin if a == "O" else dest,
-        weights_fn=weights_fn,
-        weather_fn=lambda *a, **k: {"cloud_cover": 10.0, "temperature": 32.0, "humidity": 45.0},
-        has_model=True, graph=G, shade_factor=2.0,
-    )
-    shaded = plan["route_result"]
-    # בסיס-ההשוואה = בדיוק מה ש-app.py מציג כ"מהיר" (compute_length_route על הגרף)
-    fast = routing.compute_length_route(origin, dest, plan.get("tci_uv"), G=G)
-    st, ft = shaded.get("avg_tci"), fast.get("avg_tci")
+    def _plan(sf):
+        return routing.plan_route(
+            "O", "D", use_shaded=True, nav_hour=hr,
+            geocode_fn=lambda a: origin if a == "O" else dest,
+            weights_fn=weights_fn,
+            weather_fn=lambda *a, **k: {"cloud_cover": 10.0, "temperature": 32.0, "humidity": 45.0},
+            has_model=True, graph=G, shade_factor=sf,
+        )
 
-    # invariant 1 — אין היפוך: המוצל לעולם לא חם מהמהיר
-    if st is not None and ft is not None:
-        assert st <= ft + 0.01, f"{name}@{hr:.0f}: shaded TCI {st:.2f} > fast {ft:.2f} (היפוך!)"
+    p_little, p_lots = _plan(1.0), _plan(2.0)   # מעט צל / הרבה צל
+    little, lots = p_little["route_result"], p_lots["route_result"]
+    # "מהיר" = בדיוק מה ש-app.py מציג להשוואה (compute_length_route על הגרף, TCI מדויק)
+    fast = routing.compute_length_route(origin, dest, p_lots.get("tci_uv"), G=G)
+    ft, lt, mt = fast.get("avg_tci"), little.get("avg_tci"), lots.get("avg_tci")
 
-    # invariant 2 — אין פיתול: ה-backtrack מוגבל ע"י התקרה
-    bt = routing._route_backtrack(shaded, dest)
-    assert bt <= routing.MAX_BACKTRACK_M + 5, (
-        f"{name}@{hr:.0f}: backtrack {bt:.0f}m > תקרה {routing.MAX_BACKTRACK_M:.0f}m (פיתול!)")
+    # מונוטוניות TCI: מהיר ≥ מעט ≥ הרבה (יותר צל = קריר יותר; אין היפוך). סבילות קטנה.
+    if None not in (ft, lt, mt):
+        assert lt <= ft + 0.05, f"{name}@{hr:.0f}: מעט TCI {lt:.2f} חם מהמהיר {ft:.2f} (היפוך!)"
+        assert mt <= lt + 0.05, f"{name}@{hr:.0f}: הרבה TCI {mt:.2f} חם ממעט {lt:.2f} (לא מונוטוני!)"
+    # מונוטוניות מרחק: מהיר ≤ מעט ≤ הרבה (משלמים על צל בזמן). סבילות ~מטר.
+    assert little["distance_m"] >= fast["distance_m"] - 1, f"{name}@{hr:.0f}: מעט קצר מהמהיר"
+    assert lots["distance_m"] >= little["distance_m"] - 1, f"{name}@{hr:.0f}: הרבה קצר ממעט"

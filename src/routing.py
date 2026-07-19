@@ -112,47 +112,42 @@ BOULEVARD_WEIGHT_FACTOR = 0.5      # קשת ברחוב ירוק עולה חצי 
 CANOPY_STREET_THRESHOLD = 0.35     # סף כיסוי-עצים לרחוב רגיל
 BOULEVARD_CANOPY_FLOOR = 0.24      # רף נמוך יותר לשדרות (רף רוטשילד ≈24.2%)
 PEDESTRIAN_WEIGHT_FACTOR = 0.8     # שביל ייעודי להולכי-רגל מקבל הנחה 20%
-# תקרת עיקוף: המסלול המוצל לא יעלה על DETOUR_CAP × אורך המסלול הקצר ביותר.
-# מונע פיתולים קיצוניים ששיפור הנוחות בהם זניח (מדידה: exp 3.0 מוסיף ~+90% אורך
-# עבור שיפור TCI זניח). אם המסלול חורג — מורידים את shade_factor בהדרגה עד שעומד בתקרה.
-DETOUR_CAP = 1.6
-
-# תקרת עיקוף פר-רמת-צל: (תקרת-יחס-אורך, תקרת-תוספת-דקות). לוקחים את המחמיר
-# מבין השניים לכל טיול — יחס-אורך זהה (למשל 1.6×) מתורגם לתוספת-זמן שונה
-# לגמרי בהתאם לאורך הטיול (על טיול קצר זה כמה דקות, על טיול ארוך זה עשרות),
-# אז לא מספיק להסתמך על יחס-אורך בלבד כדי שכל הרמות ירגישו עקביות.
-# רק 2 רמות (2026-07-18): "מאוזן" הוסרה — על מסלולים אמיתיים היא כמעט תמיד
-# התכנסה לאותו מסלול כמו "צל" (אין מספיק הבדל אמיתי בין עוצמות-צל סמוכות
-# ברוב הטיולים כדי להצדיק 3 רמות נפרדות).
-# "מעט צל" הורחב (2026-07-18, מאוחר יותר אותו ערב) מ-1.10×/5-דק' ל-1.20×/10-דק' —
-# אומת חי: הרחבת האחוז לבד היא no-op על טיולים מעל ~50 דק' (איבר-הדקות הקבוע
-# עדיין המחמיר), צריך להגדיל את שני האיברים ביחד. על מסלול אמיתי כזה זה פתח
-# shade_factor=0.3 במקום 0.2 (עיקוף ~17% במקום ~10%) וקירר את ה-TCI ב-1.4
-# נקודות — שיפור אמיתי, לא שולי. על מסלולים אחרים (קפיצה חדה בלי "אמצע") זה
-# לא משנה כלום — תלוי-מסלול, לא קבוע אוניברסלי.
-# "הרבה צל" הורד מ-exponent 3.0 ל-2.0 (2026-07-18): אומת חי שב-3.0 ה-A* מייצר
-# מסלולים משוננים עם backtrack (עד ~81מ' אחורה מהיעד) עבור שיפור-TCI זניח (~0.3
-# נקודות) — יחס-המשקל TCI^3 קיצוני מדי. ב-exponent ≤2.5 המסלול חלק (0 backtrack)
-# עם כמעט אותו צל. 2.0 = הערך הגבוה הבטוח (מתחת ל"מדרון" 2.5→3.0), עדיין TCI².
-_TIER_DETOUR_CAPS = {
-    1.0: (1.20, 10.0),   # מעט צל — הורחב מ-(1.10, 5.0)
-    2.0: (1.60, 30.0),   # הרבה צל — exponent הורד מ-3.0 (ר' הערה למעלה)
+# תקציב-עיקוף פר-רמה — **שאיפה, לא תקרה** (2026-07-19, מודל אדיטיבי): כמה מותר
+# למסלול המוצל להתארך יחסית למסלול הישיר *כדי לנצל את זה לצל*. "מעט צל"=1.30×
+# (תקציב קטן), "הרבה צל"=1.60× (תקציב גדול). זה המנוף שמבחין בין הרמות, ומונוטוני:
+# תקציב גדול יותר → λ קטן יותר מתאפשר → מסלול ארוך+מוצל יותר (ר' plan_route).
+# ההבדל מ"תקרה" הישנה: לא מורידים עוצמה כדי "להיכנס מתחת" — *מכוונים* את λ כדי
+# למלא את התקציב בצל. אם המסלול הכי-מוצל כבר קצר מהתקציב — לוקחים אותו (לא מרפדים).
+_TIER_TARGET_RATIOS = {
+    1.0: 1.30,   # מעט צל — תקרת-בנד עליונה קשיחה (מעל זה = "הרבה צל")
+    2.0: 1.60,   # הרבה צל
 }
-_DEFAULT_DETOUR_CAP = (DETOUR_CAP, 30.0)   # גיבוי אם shade_r לא אחד מ-2 הערכים המוכרים
+_DEFAULT_TARGET_RATIO = 1.60   # גיבוי אם shade_r לא ערך מוכר
+
+# רצפת-בנד תחתונה פר-רמה (2026-07-19): הגבול התחתון הקשיח של בנד-העיקוף. אם המסלול
+# המוצל-ביותר שנמצא בתקציב עדיין קצר מ-(רצפה × המהיר) — הצל כמעט לא עולה מרחק, אין
+# עיקוף שווה-צל → נפילה למסלול המהיר. רק ל"מעט צל" יש בנד [1.10, 1.30]: מתחת ל-1.10×
+# ⇒ מהיר. ל"הרבה צל" אין רצפה (כל צל שנמצא עד 1.60× שווה את העיקוף). ההחלטה של
+# המשתמשת (2026-07-19): "מעט צל" קטן מ-1.1× → מהיר; גדול מ-1.3× כבר "הרבה צל".
+_TIER_MIN_RATIOS = {
+    1.0: 1.10,   # מעט צל — מתחת ל-1.10× → מסלול מהיר
+}
+
+# מודל-משקל אדיטיבי (2026-07-19): weight = (TCI-1)·אורך·factor + λ·אורך.
+# λ = כפתור תקציב-העיקוף. λ גבוה → האורך שולט → מסלול קצר/חם (≈ הקצר-ביותר);
+# λ נמוך → איבר-השמש שולט → מסלול ארוך/מוצל. אורך(λ) **יורד מונוטונית** ב-λ, אז
+# חיפוש בינארי עליו אמין — בניגוד ל-TCI^shade_factor הישן שהיה לא-מונוטוני (sf=2.0
+# יצא קצר+חם יותר מ-sf=1.8) וגרם להיפוך "מעט ארוך מהרבה".
+# ב-λ גבוה מספיק (עיקוף כדאי רק אם Δאורך < 9·d_חשוף/λ) האורך שולט → מסלול ≈ הקצר-
+# ביותר, אז distance(LAMBDA_MAX) קטן מכל תקציב-רמה (≥1.30×) → תמיד קיים λ שמכניס.
+# 50 נותן עיקוף מקסימלי של ~9/50≈18% מהחלק החשוף → בבטחה מתחת ל-1.30×. LAMBDA_FLOOR>0
+# (לא 0) מונע נדידה חסרת-טעם כשצל "חינם" (שומר על מסלול-הצל הקצר מבין השווי-צל).
+LAMBDA_FLOOR = 0.05
+LAMBDA_MAX   = 50.0
 # סף חשיפה גבוהה לשמש: מקטע עם TCI מעל הסף נחשב "חשיפה גבוהה" (לחישוב תובנות המסלול).
 # 5.5 = מחצית עליונה של סקאלת ה-TCI (1-10). נבחר 5.5 ולא 7 כי בפועל ה-TCI מגיע ל-~6.4
 # לכל היותר בשעות אחה"צ (מגיע מעל 7 רק סביב שיא הצהריים) — סף 7 היה משאיר את המדד 0 ברוב היום.
 HIGH_EXPOSURE_TCI = 5.5
-# רווח-צל מינימלי שמצדיק עיקוף: אם מסלול-הצל עוקף (ארוך מהישיר) אך משפר את ה-TCI
-# הממוצע בפחות מזה מול המסלול הישיר — העיקוף לא שווה, וחוזרים לישיר. פותר את
-# "העיקוף חסר-ההיגיון" כשהאזור כבר קריר (למשל ב-10:00 הכל TCI~1-2, אין מה להרוויח).
-# ניתן-לכוונון; 1.0 נקודה על סקאלת 1-10 = שיפור מוחשי מינימלי.
-MIN_TCI_GAIN = 1.0
-# תקרת פיתול-אחורה (backtrack) למסלול המוצל: מסלול שמתרחק מהיעד ביותר מזה בקטע רציף
-# נחשב "מפותל" — לולאת ה-backoff תוריד לו אקספוננט עד שיתחלק. נמדד חי: מסלולים חלקים
-# מגיעים ל-~34מ' לכל היותר, המפותלים ל-56-127מ' — 45 מפריד ביניהם. תלוי-מסלול (חלקים
-# ב-sf=2.0 נשארים 2.0), אז לא מקפח את "הרבה צל" גלובלית. ניתן-לכוונון.
-MAX_BACKTRACK_M = 45.0
 EDGES_FEATURES_PATH = Path("data/edges_features.parquet")
 
 _PREF_CACHE = None
@@ -645,16 +640,21 @@ def compute_edge_tci(
     })
 
 
-def weights_from_edge_tci(edge_tci: pd.DataFrame, shade_factor: float = 1.0) -> tuple:
+def weights_from_edge_tci(edge_tci: pd.DataFrame, lam: float = 1.0) -> tuple:
     """
-    **החלק הזול** התלוי-ב-shade_factor: מעלה את ה-TCI בחזקת shade_factor, בונה משקל
-    (`tci^sf × אורך × מקדם-העדפה`) ומאחד פר-קשת. מחזיר (weight_dict, tci_by_uv).
-    לא משנה את edge_tci במקום (הוא ממוטמן ב-app) — קורא בלבד דרך numpy.
+    **החלק הזול** התלוי-ב-λ: בונה משקל **אדיטיבי** `(TCI-1)·אורך·factor + λ·אורך`
+    ומאחד פר-קשת. מחזיר (weight_dict, tci_by_uv). לא משנה את edge_tci במקום (הוא
+    ממוטמן ב-app) — קורא בלבד דרך numpy.
+
+    איבר-השמש `(TCI-1)·אורך·factor`: חום מצטבר לאורך הקשת (0 בצל מלא TCI=1),
+    מוכפל ב-factor כדי לשמר את העדפת הרחוב-הירוק. איבר-האורך `λ·אורך`: מחיר-מרחק
+    שמכייל את תקציב-העיקוף. λ גבוה → קצר/חם; λ נמוך → ארוך/מוצל (מונוטוני באורך).
     """
     tci        = edge_tci["tci"].to_numpy()
-    # shade_factor>1 מגביר הבדלי TCI: TCI=2→2^1.5≈2.8, TCI=8→8^1.5≈22.6 — פי 8 במקום פי 4
-    _tci_w     = np.clip(tci ** float(shade_factor), 1.0, None)
-    tci_weight = _tci_w * np.clip(edge_tci["length"].to_numpy(), 0.1, None) * edge_tci["factor"].to_numpy()
+    length     = np.clip(edge_tci["length"].to_numpy(), 0.1, None)
+    factor     = edge_tci["factor"].to_numpy()
+    # משקל אדיטיבי: עלות-שמש (≥0) + מחיר-אורך. מחליף את TCI^shade_factor הלא-מונוטוני.
+    tci_weight = (tci - 1.0) * length * factor + float(lam) * length
 
     _gb = pd.DataFrame({
         "u": edge_tci["u"].to_numpy(),
@@ -678,19 +678,19 @@ def compute_tci_weights(
     cloud_cover: float,
     temperature: float,
     humidity: float,
-    shade_factor: float = 1.0,
+    lam: float = 1.0,
 ) -> tuple:
     """
     מחשב TCI לכל 58k קשתות הגרף ומחזיר (weight_dict, tci_by_uv).
 
-    עטיפה דקה מעל compute_edge_tci (החלק היקר, אינו תלוי shade_factor) +
+    עטיפה דקה מעל compute_edge_tci (החלק היקר, אינו תלוי λ) +
     weights_from_edge_tci (החלק הזול). נשמרה לתאימות-לאחור — פלט זהה לחלוטין.
     """
     edge_tci = compute_edge_tci(
         edges_df, model_bundle, sun_altitude, sun_azimuth,
         cloud_cover, temperature, humidity,
     )
-    return weights_from_edge_tci(edge_tci, shade_factor)
+    return weights_from_edge_tci(edge_tci, lam)
 
 
 def _haversine_latlon(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -734,12 +734,16 @@ def compute_shaded_route(
     weight_dict: dict,
     tci_by_uv: dict,
     G: nx.MultiDiGraph = None,
+    lam: float = LAMBDA_FLOOR,
 ) -> dict:
     """
-    מחשב מסלול הליכה מוצל בין שתי נקודות דרך A* עם משקלי TCI.
+    מחשב מסלול הליכה מוצל בין שתי נקודות דרך A* עם משקלים אדיטיביים.
 
-    A* עם היוריסטיקת haversine ×0.5 (admissible: min_weight_per_m = TCI_min×factor_min = 0.5).
-    מחזיר את אותו מסלול אופטימלי כמו Dijkstra אך עם פחות צמתים שנחקרים (~20-30% מהיר יותר).
+    weight_dict בנוי כ-`(TCI-1)·אורך·factor + λ·אורך` (ר' weights_from_edge_tci),
+    אז מחיר-המינימום-למטר = λ (כשקשת מוצלת מלאה). לכן היוריסטיקה `haversine × λ`
+    קבילה (admissible) — לעולם לא עוברת את המחיר האמיתי. λ מועבר לכאן רק כדי לכייל
+    את ההיוריסטיקה; ערך λ עצמו כבר טבוע בתוך weight_dict. אין ענישת-כיוון: איבר-
+    האורך (λ·אורך) מעניש כל צעד אחורה בעצמו (מוסיף מרחק) → מסלול חלק ללא זיגזג.
     """
     if G is None:
         G = load_graph()
@@ -750,19 +754,21 @@ def compute_shaded_route(
         raise ValueError("נקודת המוצא והיעד קרובות מדי — נסה כתובות מרוחקות יותר")
 
     _t0 = time.monotonic()
+    _h_scale = max(0.0, float(lam))   # מקדם היוריסטיקה קביל (≤ מחיר-המינימום-למטר)
     try:
         def _edge_weight(u, v, d):
             # d ב-MultiDiGraph הוא {key: data} של כל הקשתות המקבילות — לא קשת בודדת.
-            # לכן ה-fallback חייב לחלץ length דרך d.values() (d.get("length") היה מחזיר
-            # תמיד None→50 קבוע, ומזער הופ-קאונט במקום מרחק כשקשת חסרה מ-weight_dict).
-            w = weight_dict.get((u, v))
-            if w is not None:
-                return w
-            return min(dd.get("length", 50) for dd in d.values()) * 5
+            # לכן חילוץ length דרך d.values() (d.get("length") היה מחזיר תמיד None→50 קבוע,
+            # ומזער הופ-קאונט במקום מרחק כשקשת חסרה מ-weight_dict).
+            _len = min(dd.get("length", 50) for dd in d.values())
+            base = weight_dict.get((u, v))
+            if base is None:
+                base = _len * 5
+            return base
 
         path = nx.astar_path(
             G, orig_node, dest_node,
-            heuristic=lambda u, v: _haversine_m(G, u, v) * 0.5,
+            heuristic=lambda u, v: _haversine_m(G, u, v) * _h_scale,
             weight=_edge_weight,
         )
     except nx.NetworkXNoPath:
@@ -1018,16 +1024,18 @@ def plan_route(
     לפני כל שלב אמיתי בזרימה — כדי שממשק המשתמש יוכל להציג סטטוס חי (st.status)
     במקום ספינר סתום יחיד, מבלי לשבור את חוזה ה-DI/testability הקיים.
 
+    shade_factor — בורר-רמה: 1.0="מעט צל" (תקציב-עיקוף 1.30×), 2.0="הרבה צל" (1.60×).
+                   הערך עצמו אינו האקספוננט יותר — הוא בוחר את תקציב-העיקוף שאותו
+                   מכיילים ב-λ (ר' המודל האדיטיבי ב-weights_from_edge_tci / _route_at).
+
     מחזיר dict:
       route_result — תוצאת המסלול (route_latlon, distance_m, duration_min, avg_tci?)
       color        — צבע לציור (ירוק=מוצל, כחול=מהיר)
       mode         — "shaded" / "fast" בפועל (אחרי fallbacks)
-      fallback     — None (הצלחה מלאה) / "model_missing" / "weights_missing" /
-                     "night" / "overcast" (נפילה למהיר, סיבות זמינות) /
-                     "tier_escalated" (mode="shaded" — הורחב ל"הרבה צל" כדי למצוא מסלול) /
-                     "best_effort_over_budget" (mode="shaded" — חורג מהתקציב הרגיל,
-                     אך קריר מהמהיר בפועל) /
-                     "detour_cap_unreachable" (mode="fast" — אין שום מסלול-צל קריר מהמהיר)
+      fallback     — None (מצב מוצל רגיל) / "model_missing" / "weights_missing" /
+                     "night" / "overcast" (נפילה למהיר).
+      lambda_used  — ה-λ (מחיר-האורך) שנבחר בחיפוש-התקציב. λ קטן = מסלול ארוך/מוצל יותר.
+      detour_ratio — distance_m / base_dist בפועל (כמה מהתקציב נוצל; None אם אין בסיס).
     """
     # on_progress מועבר positional (לא keyword) כדי שיתאים גם ל-geocode_fn
     # מוזרק שהפרמטר הפנימי שלו נקרא אחרת (למשל _on_progress, לצורך cache-key
@@ -1076,187 +1084,119 @@ def plan_route(
     temp_r = round(weather["temperature"] / 5) * 5
     hum_r = round(weather["humidity"] / 10) * 10
 
-    shade_r = round(shade_factor * 2) / 2   # מעוגל ל-0.5 לצורך cache grouping
-    wdict, tci_uv = (None, None)
-    if weights_fn is not None:
-        if on_progress:
-            on_progress("מחשב חשיפה לשמש לכל הרחובות...")
-        wdict, tci_uv = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, shade_r)
+    shade_r = round(shade_factor * 2) / 2   # בורר-רמה: 1.0=מעט צל, 2.0=הרבה צל
+    target = _TIER_TARGET_RATIOS.get(shade_r, _DEFAULT_TARGET_RATIO)
 
-    if wdict is None:
+    if weights_fn is None:
         result["route_result"] = compute_route(origin_latlon, dest_latlon)
         result["fallback"] = "weights_missing"
         return result
 
     if on_progress:
-        on_progress("מחשב את המסלול המוצל ביותר...")
-    route = compute_shaded_route(
-        origin_latlon, dest_latlon, wdict, tci_uv, G=graph)
+        on_progress("מחשב חשיפה לשמש לכל הרחובות...")
 
-    # תקרת עיקוף פר-רמה: אם המסלול המוצל ארוך מהתקרה האפקטיבית של הרמה שנבחרה
-    # (המחמיר מבין תקרת-האחוזים ותקרת-הדקות שלה, ר' _TIER_DETOUR_CAPS), מחפשים
-    # את ה-shade_factor הגבוה ביותר (הכי קרוב להעדפה המקורית) שעדיין עומד בתקרה,
-    # ע"י ירידה בצעדים עדינים של 0.1 (לא 0.5!) עד רצפה של 0.1 — לא 0.0 ולא 1.0.
-    #
-    # למה 0.1 ולא 0.5 (תוקן 2026-07-18): בבדיקה אמפירית על מסלולים אמיתיים
-    # התברר שהיחס בין shade_factor למרחק/TCI לא ליניארי ולא חלק — לפעמים יש
-    # "נקודת מתיקה" זולה (למשל 0.3: רק 7.5% עיקוף אך כבר קריר מהמסלול המהיר),
-    # אבל צעד של 0.5 (1.0→0.5→0.0) קופץ *מעליה* לגמרי, ישר מ"אגרסיבי מדי" ל
-    # "עיוור-ל-TCI לחלוטין". צעד של 0.1 (עד 10 ניסיונות) מוצא נקודות-מתיקה כאלה
-    # כשהן קיימות, בלי לוותר לגמרי על שיקול-TCI.
-    #
-    # למה רצפה 0.1 ולא 0.0: ב-shade_factor=0.0 המשקל הופך ל-tci^0=1 קבוע לכל
-    # קשת — עיוור לגמרי לחום האמיתי, רק מרחק מוזל לפי רחוב-ירוק/מדרכה. זה מה
-    # שיצר מסלולי "צל" קצרים יותר אך חמים יותר מהמסלול המהיר. גם ב-0.1 יש עדיין
-    # שיקול-TCI אמיתי (חלש, אך לא אפס).
-    #
-    # מדרג נפילה (2026-07-18, ערב): תקרת-הדקות הקבועה (+5/+30 דק') מתכווצת
-    # יחסית ככל שהטיול ארוך יותר (מעל ~50 דק' היא הופכת למגבילה מהיחס%) —
-    # אז רמה שנבחרה יכולה להיכשל בתקציב שלה גם כשעדיין יש צל ממשי זמין ברמה
-    # הרחבה יותר. במקום לוותר על צל לגמרי בפעם הראשונה שהרמה הנבחרת נכשלת:
-    #   1. מנסים את הרמה שנבחרה (כרגיל).
-    #   2. אם נכשלה וזו לא כבר "הרבה צל" — מנסים את "הרבה צל" (התקרה הרחבה
-    #      ביותר שיש) לפני שמוותרים. הצלחה כאן → "tier_escalated" (מגולה למשתמש).
-    #   3. אם גם הרמה הרחבה ביותר נכשלה — בודקים אם הניסיון הכי טוב שנמצא
-    #      (מכל אחת מ-2 הרמות) בכל זאת קריר מהמסלול המהיר. אם כן → מציגים אותו
-    #      כ"best_effort_over_budget" (חורג מהתקציב הרגיל, אבל אמיתי ומועיל).
-    #      רק אם אף ניסיון לא קריר מהמהיר → נופלים בכנות למסלול מהיר רגיל
-    #      (fallback="detour_cap_unreachable") — לעולם לא מסלול "מוצל" שקרי.
+    # memo של מסלול לפי λ מעוגל (0.05) — נמנע מחישוב כפול של אותו λ בחיפוש הבינארי.
+    # tci_uv אינו תלוי-λ (ה-TCI הממוצע פר-קשת) → נלכד פעם אחת מהקריאה הראשונה שמצליחה.
+    _route_memo = {}
+    _tci_uv_box = {}
+
+    def _route_at(lam):
+        key = round(float(lam) / 0.05)
+        if key not in _route_memo:
+            _w, _t = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, float(lam))
+            if _w is None:
+                _route_memo[key] = None
+            else:
+                _tci_uv_box.setdefault("v", _t)
+                _route_memo[key] = compute_shaded_route(
+                    origin_latlon, dest_latlon, _w, _t, G=graph, lam=float(lam))
+        return _route_memo[key]
+
+    # בדיקת-זמינות + קצה-קצר: λ=LAMBDA_MAX ≈ המסלול הקצר-ביותר על הגרף.
+    route_short = _route_at(LAMBDA_MAX)
+    if route_short is None:
+        result["route_result"] = compute_route(origin_latlon, dest_latlon)
+        result["fallback"] = "weights_missing"
+        return result
+    tci_uv = _tci_uv_box["v"]
+
     base_dist = shortest_walk_distance(origin_latlon, dest_latlon, G=graph)
     if base_dist in (0.0, float("inf")):
-        result["route_result"] = route
+        # אין בסיס-השוואה → מחזירים את המסלול הכי-מוצל (λ=FLOOR) כמו-שהוא.
+        route_floor = _route_at(LAMBDA_FLOOR) or route_short
+        result["route_result"] = route_floor
         result["color"] = "#27ae60"
         result["mode"] = "shaded"
-        result["shade_factor_used"] = shade_r
-        result["capped"] = False
+        result["lambda_used"] = LAMBDA_FLOOR
+        result["detour_ratio"] = None
         result["tci_uv"] = tci_uv
         return result
 
-    base_time_min = base_dist / WALK_SPEED_MPM
+    # "Little shade" is a hard three-way gate around the requested detour band.
+    # Judge the genuinely shadiest route first; do not manufacture a compromise
+    # just below the upper bound, which made the two shade tiers look alike.
+    if shade_r == 1.0:
+        route_floor = _route_at(LAMBDA_FLOOR) or route_short
+        floor_ratio = route_floor["distance_m"] / base_dist
+        min_ratio = _TIER_MIN_RATIOS[1.0]
 
-    # cache משותף לשתי קריאות _fit_within_cap (רמה-נבחרת + הסלמה): אותו factor על
-    # אותו מזג-אוויר/גרף → אותו מסלול בדיוק, אז לא מחשבים אותו פעמיים.
-    _route_memo = {}
-
-    def _fit_within_cap(shade_start, start_route=None):
-        """מוצא את ה-shade_factor הגבוה ביותר (על רשת 0.1) שהמסלול שלו עדיין נכנס
-        לתקרת-העיקוף האפקטיבית של הרמה, בחיפוש בינארי (~5 חישובי-מסלול) במקום סריקה
-        לינארית (~30). מסתמך על מונוטוניות distance(shade_factor): יותר משקל-צל → עיקוף
-        ארוך/שווה. מחזיר (route, factor_used, fits_within_cap). רצפה 0.1. cache משותף
-        (_route_memo) נמנע מחישוב כפול של אותו decile בין הרמות."""
-        ratio_cap, time_cap_min = _TIER_DETOUR_CAPS.get(shade_start, _DEFAULT_DETOUR_CAP)
-        eff_cap = (min(ratio_cap, 1 + (time_cap_min / base_time_min))
-                   if base_time_min > 0 else ratio_cap)
-        thresh = eff_cap * base_dist
-        hi_d = int(round(shade_start * 10))   # deciles: shade_factor × 10
-        lo_d = 1                               # רצפה = 0.1
-        if start_route is not None:
-            _route_memo.setdefault(hi_d, start_route)
-
-        def _route_at(d):
-            if d not in _route_memo:
-                _w, _t = weights_fn(alt_r, az_r, cloud_r, temp_r, hum_r, d / 10.0)
-                _route_memo[d] = (None if _w is None else
-                                  compute_shaded_route(origin_latlon, dest_latlon, _w, _t, G=graph))
-            return _route_memo[d]
-
-        def _fits(d):
-            # "נכנס" = גם בתוך תקרת-האורך וגם חלק (backtrack ≤ MAX_BACKTRACK_M). שני
-            # התנאים מונוטוניים ב-shade_factor (אקספוננט↑ → אורך↑ ו-backtrack↑), אז
-            # החיתוך נשאר downward-closed והחיפוש הבינארי תקין.
-            rt = _route_at(d)
-            return (rt is not None and rt["distance_m"] <= thresh
-                    and _route_backtrack(rt, dest_latlon) <= MAX_BACKTRACK_M)
-
-        # הרמה המלאה כבר נכנסת → אין צורך בחיפוש (המקרה השכיח).
-        if _fits(hi_d):
-            return _route_at(hi_d), hi_d / 10.0, True
-
-        # חיפוש בינארי על [lo_d, hi_d-1] ל-decile הגבוה ביותר שנכנס.
-        best_d, lo, hi = None, lo_d, hi_d - 1
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            if _fits(mid):
-                best_d, lo = mid, mid + 1
-            else:
-                hi = mid - 1
-        if best_d is not None:
-            return _route_at(best_d), best_d / 10.0, True
-
-        # אף factor לא נכנס — מחזירים את הרצפה (fits=False), כמו הסריקה הישנה שעצרה ברצפה.
-        rt_floor = _route_at(lo_d)
-        if rt_floor is None:                       # weights_fn שבור לאורך כל הדרך
-            return (_route_at(hi_d) or start_route), hi_d / 10.0, False
-        return rt_floor, lo_d / 10.0, (rt_floor["distance_m"] <= thresh)
-
-    # שער רווח-צל: מסלול-הבסיס הישיר מחושב עצלנית פעם אחת. אם המסלול המוצל שנבחר
-    # *עוקף* (ארוך מהישיר) אך משפר את ה-TCI הממוצע בפחות מ-MIN_TCI_GAIN — העיקוף
-    # אינו שווה (למשל ב-10:00 הכל כבר קריר), ומחזירים את הישיר. אם המסלול המוצל כבר
-    # מתכנס לישיר (לא עוקף) — השער לא נוגע בו, מוחזר כרגיל.
-    _direct_holder = {}
-
-    def _direct_route():
-        if "r" not in _direct_holder:
-            try:
-                _direct_holder["r"] = compute_length_route(
-                    origin_latlon, dest_latlon, tci_uv, G=graph)
-            except Exception:
-                _direct_holder["r"] = None
-        return _direct_holder["r"]
-
-    def _finalize(route_sel, factor_sel, capped_sel, fallback_sel):
-        direct = _direct_route()
-        if (direct is not None and route_sel is not None
-                and route_sel.get("distance_m", 0.0) > direct.get("distance_m", 0.0) + 1.0
-                and route_sel.get("avg_tci") is not None and direct.get("avg_tci") is not None
-                and (direct["avg_tci"] - route_sel["avg_tci"]) < MIN_TCI_GAIN):
-            result["route_result"] = direct
-            result["color"] = "#27ae60"
-            result["mode"] = "shaded"
-            result["shade_factor_used"] = 0.0
-            result["capped"] = True
-            result["fallback"] = "shade_gain_negligible"
+        if floor_ratio < min_ratio:
+            fast_route = compute_length_route(
+                origin_latlon, dest_latlon, tci_by_uv=tci_uv, G=graph)
+            result["route_result"] = fast_route
+            result["fallback"] = "little_shade_below_band"
+            result["lambda_used"] = None
+            result["detour_ratio"] = round(fast_route["distance_m"] / base_dist, 3)
             result["tci_uv"] = tci_uv
             return result
-        result["route_result"] = route_sel
-        result["color"] = "#27ae60"
-        result["mode"] = "shaded"
-        result["shade_factor_used"] = factor_sel
-        result["capped"] = capped_sel
-        if fallback_sel is not None:
-            result["fallback"] = fallback_sel
+
+    thresh = target * base_dist
+
+    if on_progress:
+        on_progress("מחשב את המסלול המוצל ביותר...")
+
+    # מודל אדיטיבי: מכוונים את λ כדי **לנצל את תקציב-העיקוף לצל**. distance(λ) יורד
+    # מונוטונית ב-λ, אז מחפשים בבינארי את ה-λ **הקטן ביותר** שהמסלול שלו עדיין ≤ thresh
+    # (=target×base_dist). λ קטן ביותר שנכנס = המסלול הארוך ביותר בתוך התקציב = **הכי
+    # מוצל בתוך התקציב**. תקציב גדול יותר (1.60×) מאפשר λ קטן יותר → ארוך+מוצל יותר
+    # מ-1.30× → ההיררכיה מונוטונית בהגדרה, בלי היפוך. שאיפה, לא תקרה: אם כבר ב-λ=FLOOR
+    # המסלול קצר מהתקציב — לוקחים אותו (הכי מוצל שיש), לא מרפדים אורך סתם.
+    def _dist(lam):
+        rt = _route_at(lam)
+        return float("inf") if rt is None else rt["distance_m"]
+
+    if _dist(LAMBDA_FLOOR) <= thresh:
+        lam_used = LAMBDA_FLOOR
+    else:
+        lo, hi = LAMBDA_FLOOR, LAMBDA_MAX   # lo=ארוך/אינפיזבילי, hi=קצר/פיזבילי
+        for _ in range(24):
+            if hi - lo <= 0.05:
+                break
+            mid = (lo + hi) / 2.0
+            if _dist(mid) <= thresh:
+                hi = mid            # פיזבילי → מנסים λ קטן יותר (ארוך/מוצל יותר)
+            else:
+                lo = mid            # אינפיזבילי → צריך λ גדול יותר (קצר יותר)
+        lam_used = hi               # ה-λ הקטן ביותר שנמצא כפיזבילי
+
+    route1 = _route_at(lam_used) or route_short
+    route1_ratio = route1["distance_m"] / base_dist
+    if shade_r == 1.0 and route1_ratio < _TIER_MIN_RATIOS[1.0]:
+        fast_route = compute_length_route(
+            origin_latlon, dest_latlon, tci_by_uv=tci_uv, G=graph)
+        result["route_result"] = fast_route
+        result["fallback"] = "little_shade_below_band"
+        result["lambda_used"] = None
+        result["detour_ratio"] = round(fast_route["distance_m"] / base_dist, 3)
         result["tci_uv"] = tci_uv
         return result
 
-    route1, factor1, fits1 = _fit_within_cap(shade_r, start_route=route)
-    if fits1:
-        return _finalize(route1, factor1, (factor1 != shade_r), None)
-
-    WIDEST_TIER = 2.0
-    best_route, best_factor = route1, factor1
-    if shade_r < WIDEST_TIER:
-        if on_progress:
-            on_progress("מרחיב את תקציב העיקוף לרמת 'הרבה צל'...")
-        route2, factor2, fits2 = _fit_within_cap(WIDEST_TIER)
-        if fits2:
-            return _finalize(route2, factor2, True, "tier_escalated")
-        if (route2.get("avg_tci") is not None and
-                (best_route.get("avg_tci") is None or route2["avg_tci"] < best_route["avg_tci"])):
-            best_route, best_factor = route2, factor2
-
-    if on_progress:
-        on_progress("בודק אם יש בכל זאת מסלול קריר יותר מהמהיר...")
-    fast_route = compute_route(origin_latlon, dest_latlon, tci_by_uv=tci_uv, G=graph)
-    if (best_route.get("avg_tci") is not None and fast_route.get("avg_tci") is not None
-            and best_route["avg_tci"] < fast_route["avg_tci"]):
-        return _finalize(best_route, best_factor, True, "best_effort_over_budget")
-
-    if on_progress:
-        on_progress("לא נמצא מסלול מוצל קריר יותר מהמהיר — עובר למסלול מהיר...")
-    result["route_result"] = fast_route
-    result["fallback"] = "detour_cap_unreachable"
-    result["shade_factor_used"] = best_factor
-    result["capped"] = True
+    result["route_result"] = route1
+    result["color"] = "#27ae60"
+    result["mode"] = "shaded"
+    result["lambda_used"] = round(float(lam_used), 3)
+    result["detour_ratio"] = round(route1_ratio, 3)
+    result["tci_uv"] = tci_uv
     return result
 
 

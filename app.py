@@ -544,17 +544,19 @@ def _precompute_edge_tci(
 def _precompute_nav_weights(
     sun_alt_r: float, sun_az_r: float,
     cloud_r: float, temp_r: float, hum_r: float,
-    shade_factor: float = 1.0,
+    lam: float = 1.0,
 ):
     """
     מחזיר (weight_dict, tci_by_uv) לניווט. שכבת החֶזְקָה הזולה מעל edge_tci הממוטמן —
     ה-predict היקר כבר בוצע ב-_precompute_edge_tci (cache hit אחרי הקריאה הראשונה).
-    ממוטמן לפי מזג אוויר + shade_factor.
+    ממוטמן לפי מזג אוויר + λ (מחיר-האורך במודל האדיטיבי). plan_route קורא לכאן בערכי-λ
+    מגוונים בחיפוש-התקציב (לא ב-shade_factor) — כל λ הוא cache-key נפרד, אך ה-predict
+    היקר ב-_precompute_edge_tci ממוטמן במזג-אוויר בלבד ולכן רץ פעם אחת.
     """
     edge_tci = _precompute_edge_tci(sun_alt_r, sun_az_r, cloud_r, temp_r, hum_r)
     if edge_tci is None:
         return None, None
-    return weights_from_edge_tci(edge_tci, float(shade_factor))
+    return weights_from_edge_tci(edge_tci, float(lam))
 
 
 @st.cache_data
@@ -1000,10 +1002,7 @@ if find_btn or _quick_run:
             "weights_missing": "⚠️ משקלי TCI לא זמינים — מציג מסלול מהיר.",
             "night":           "🌙 חשוך בחוץ — מציג מסלול מהיר (אין צל בלילה).",
             "overcast":        "☁️ מעונן מאוד (>80%) — מציג מסלול מהיר (הצל פחות רלוונטי).",
-            "tier_escalated":  "🌳 מגבלת העיקוף של הרמה שבחרת הייתה צמודה מדי — הרחבנו אוטומטית לרמת \"הרבה צל\" כדי למצוא מסלול מוצל.",
-            "best_effort_over_budget": "🥵 לא נמצא מסלול בתוך תקציב העיקוף הרגיל — מוצג המסלול הכי קריר שנמצא, גם אם הוא חורג מהרגיל.",
-            "detour_cap_unreachable": "🥵 לא נמצא מסלול מוצל קריר יותר מהמסלול המהיר בשום תקציב עיקוף — מציג מסלול מהיר.",
-            "shade_gain_negligible": "🌿 המסלול הישיר כבר מוצל — אין טעם בעיקוף כרגע, אז מוצג המסלול הישיר.",
+            "little_shade_below_band": "העיקוף המוצל קטן מ־10% — מציג את המסלול המהיר.",
         }
         if plan is not None and plan["fallback"] in _FALLBACK_MSGS:
             st.info(_FALLBACK_MSGS[plan["fallback"]])
