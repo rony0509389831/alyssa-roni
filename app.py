@@ -1002,7 +1002,7 @@ if find_btn or _quick_run:
             "weights_missing": "⚠️ משקלי TCI לא זמינים — מציג מסלול מהיר.",
             "night":           "🌙 חשוך בחוץ — מציג מסלול מהיר (אין צל בלילה).",
             "overcast":        "☁️ מעונן מאוד (>80%) — מציג מסלול מהיר (הצל פחות רלוונטי).",
-            "little_shade_below_band": "העיקוף המוצל קטן מ־10% — מציג את המסלול המהיר.",
+            "little_shade_below_band": "לא נמצא מסלול-צל חלופי אמיתי בסביבה (גם בחיפוש הכי אגרסיבי אחרי צל) — מוצג המסלול הישיר.",
         }
         if plan is not None and plan["fallback"] in _FALLBACK_MSGS:
             st.info(_FALLBACK_MSGS[plan["fallback"]])
