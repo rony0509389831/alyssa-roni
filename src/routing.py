@@ -1198,12 +1198,61 @@ def plan_route(
         result["tci_uv"] = tci_uv
         return result
 
+    # תיקון-דיוק-תצוגה (2026-07-19): גם כשהעיקוף עובר את סף-המרחק, המודל האדיטיבי
+    # עלול לרדוף אחרי הפרש-חום זעיר וממוקם (קטע קצר עם TCI גבוה על המסלול הישיר)
+    # דרך עיקוף לא-פרופורציונלי — כי λ×אורך זול ביחס לעלות-החום שנחסכת, גם אם
+    # ההפרש לא זז בממוצע המוצג (מעוגל לעשירית). משווים avg_tci מעוגל מול הבסיס
+    # האמיתי (compute_length_route, לא route_short המשוקלל-λ) — אם אין הבדל
+    # נראה-לעין, אין טעם להציג "מסלול מוצל" נפרד שבפועל לא מרגיש שונה. חל על שתי
+    # הרמות (לא רק "מעט צל") — התופעה לא תלוית-רמה.
+    baseline_route = compute_length_route(
+        origin_latlon, dest_latlon, tci_by_uv=tci_uv, G=graph)
+    r1_tci, base_tci = route1.get("avg_tci"), baseline_route.get("avg_tci")
+    if r1_tci is not None and base_tci is not None and round(r1_tci, 1) >= round(base_tci, 1):
+        result["route_result"] = baseline_route
+        result["fallback"] = "shade_gain_not_visible"
+        result["lambda_used"] = None
+        result["detour_ratio"] = round(baseline_route["distance_m"] / base_dist, 3)
+        result["tci_uv"] = tci_uv
+        return result
+
     result["route_result"] = route1
     result["color"] = "#27ae60"
     result["mode"] = "shaded"
     result["lambda_used"] = round(float(lam_used), 3)
     result["detour_ratio"] = round(route1_ratio, 3)
     result["tci_uv"] = tci_uv
+
+    # שקיפות-התכנסות (2026-07-19, הורחב 2026-07-20): רמות-צל סמוכות מתכנסות "כמעט
+    # תמיד" לאותה תוצאה בפועל (ר' Key Decisions ב-CLAUDE.md — מגבלה מבנית של הגרף,
+    # לא באג). כש"הרבה צל" מצליח (הגיע לכאן, לא נפל לאף fallback), בודקים אם "מעט
+    # צל" משיג לפחות אותו TCI-מעוגל (הנראה-לעין) — קריאה חוזרת קלה ל-plan_route (לא
+    # רקורסיה אינסופית: shade_factor=1.0 → shade_r=1.0≠2.0, התנאי לא חוזר), תוך
+    # שימוש-חוזר במזג-אוויר ובגאוקוד שכבר יש (לא קריאות-רשת נוספות). **הקריטריון הוא
+    # שיפור-TCI, לא זהות-מסלול** — גם כשהמסלולים שונים (אורך שונה), אם "הרבה צל" לא
+    # קריר-יותר-בעין מ"מעט צל" הוא לא קונה כלום, ואז מציגים בפועל את מסלול "מעט צל"
+    # (קצר יותר, לפחות אותו TCI) גם עבור "הרבה צל" — לא רק מוסיפים הודעה מעל מסלול
+    # ארוך-לשווא. מונוטוניות-האורך המובטחת (הרבה צל ≥ מעט צל תמיד) מבטיחה שההחלפה
+    # הזו לעולם לא "מקצרת" בטעות מסלול שהיה קצר יותר מלכתחילה.
+    if shade_r == 2.0:
+        _coords = iter([origin_latlon, dest_latlon])
+        little_plan = plan_route(
+            origin, dest, use_shaded=True, nav_hour=nav_hour,
+            geocode_fn=lambda *_: next(_coords),
+            weather_fn=lambda: weather,
+            weights_fn=weights_fn, has_model=True, graph=graph, now=now,
+            shade_factor=1.0,
+        )
+        if little_plan["fallback"] is None:
+            little_route = little_plan["route_result"]
+            lots_tci, little_tci = route1.get("avg_tci"), little_route.get("avg_tci")
+            if (lots_tci is not None and little_tci is not None
+                    and round(lots_tci, 1) >= round(little_tci, 1)):
+                result["route_result"] = little_route
+                result["lambda_used"] = little_plan.get("lambda_used")
+                result["detour_ratio"] = little_plan.get("detour_ratio")
+                result["fallback"] = "same_as_little_shade"
+
     return result
 
 
